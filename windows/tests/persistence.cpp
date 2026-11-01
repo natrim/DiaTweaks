@@ -88,6 +88,12 @@ int main() {
         Check(RegSetValueExW(appKey, L"WindowsFlags", 0, REG_SZ, reinterpret_cast<const BYTE*>(bad), sizeof(bad)) == ERROR_SUCCESS, "seed invalid preference type");
         Check(third.Send(dt::LoadSelection) < 0, "wrong registry type is not silently read as off");
         RegCloseKey(appKey);
+        Check(SUCCEEDED(app.Write(dt::Spaces)), "seed saved choice before detach");
+        Check(third.Send(dt::Configure, dt::Spaces) == S_OK, "apply saved choice before detach");
+        Check(third.Send(dt::Detach) == S_OK, "detach keeps saved choices");
+        auto deadline = GetTickCount64() + 5000;
+        while (IsWindow(third.window) && GetTickCount64() < deadline) { Pump(); Sleep(5); }
+        Check(!IsWindow(third.window) && Read(app) == dt::Spaces, "detaching restores UI without saving off");
         std::cout << "Registry persistence, isolated-view IPC, reattachment and read-error checks passed\n";
         return 0;
     } catch (const std::exception& e) {

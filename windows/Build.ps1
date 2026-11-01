@@ -28,10 +28,15 @@ try {
     $headers = & (Join-Path $PSScriptRoot 'Prepare-WinUI.ps1') -OutputDirectory $output
     # The preparation script writes tool output too; its last output is the path.
     $headers = @($headers)[-1]
+    # A distinct COM class and window class prevent old-build factory reuse.
+    $buildId = [guid]::NewGuid()
+    @(('#define DT_SESSION_SUFFIX L"' + $buildId.ToString('N') + '"'),
+      ('#define DT_TAP_CLSID ' + $buildId.ToString('X'))) | Set-Content -Encoding ASCII (Join-Path $output 'DiaTweaksBuild.h')
+    $production = @('/DDT_PRODUCTION_BUILD', "/I$output")
     $exports = '/DEF:' + (Join-Path $PSScriptRoot 'native/Tap.def')
-    & cl.exe @common /D DT_SETTINGS_UI "/I$headers" /LD (Join-Path $PSScriptRoot 'native/Tap.cpp') (Join-Path $PSScriptRoot 'native/Settings.cpp') /Fe:DiaTweaks.Tap.dll /link $exports ole32.lib oleaut32.lib user32.lib advapi32.lib windowsapp.lib
+    & cl.exe @common @production /D DT_SETTINGS_UI "/I$headers" /LD (Join-Path $PSScriptRoot 'native/Tap.cpp') (Join-Path $PSScriptRoot 'native/Settings.cpp') /Fe:DiaTweaks.Tap.dll /link $exports ole32.lib oleaut32.lib user32.lib advapi32.lib windowsapp.lib
     if ($LASTEXITCODE) { throw 'TAP DLL compilation failed.' }
-    & cl.exe @common (Join-Path $PSScriptRoot 'native/Attach.cpp') /Fe:DiaTweaks.exe /link ole32.lib oleaut32.lib user32.lib psapi.lib advapi32.lib
+    & cl.exe @common @production (Join-Path $PSScriptRoot 'native/Attach.cpp') /Fe:DiaTweaks.exe /link ole32.lib oleaut32.lib user32.lib psapi.lib advapi32.lib
     if ($LASTEXITCODE) { throw 'Controller compilation failed.' }
 } finally { Pop-Location }
 Write-Host "Built DiaTweaks.exe and DiaTweaks.Tap.dll in $output"

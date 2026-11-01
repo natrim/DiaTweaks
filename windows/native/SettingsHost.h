@@ -16,10 +16,12 @@ enum SettingsField : WPARAM { SettingsCandidates, SettingsInstalled, SettingsLas
 #ifdef DT_SETTINGS_UI
 void ObserveSettings(IInspectable* navigationView, SettingsApi api) noexcept;
 void RefreshSettings() noexcept;
+HRESULT DetachSettings() noexcept;
 LRESULT SettingsStatus(WPARAM field) noexcept;
 #else
 inline void ObserveSettings(IInspectable*, SettingsApi) noexcept {}
 inline void RefreshSettings() noexcept {}
+inline HRESULT DetachSettings() noexcept { return S_OK; }
 inline LRESULT SettingsStatus(WPARAM) noexcept { return 0; }
 #endif
 }

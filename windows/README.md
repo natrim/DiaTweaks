@@ -20,6 +20,8 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--hide-toolbar` | `hideToolbar` (experimental) | `NavigationBarHost` and optional `BookmarksBarHost` |
 | `--hide-recent-tabs` | `hideRecentTabsButton` (sidebar only) | `OverflowButton` within `WindowDragHeader` and `SidebarPresenter` |
 | `--hide-spaces` | Windows addition | `SpaceSwitcherButton` |
+| `--unload` / `--detach` | Disconnect the current add-on; keep saved choices | Restore UI, remove Settings handlers, unsubscribe |
+| `--reload` | Disconnect and attach this build with saved choices | New cached DLL copy |
 | `--restore` | Restore this session's overrides | Saved original properties |
 
 The button and extensions selectors were observed in a complete UI Automation
@@ -61,6 +63,8 @@ Persistence tests use disposable registry keys to model different launcher and
 Dia registry views, save through the real Settings IPC path, and load the saved
 choice into fresh backend sessions. They also check invalid data and types,
 explicit restoration to off, and that reading defaults never writes them back.
+Detach tests cover failed restoration, failed unsubscription and retry, late
+callbacks, session recreation in the same process, and saved-choice preservation.
 
 ## Run
 
@@ -88,19 +92,46 @@ so the reader and writer use the same package/registry view. Startup reads the
 selection after attaching and never saves defaults over it. A missing value
 means off; other read errors stop attachment configuration without overwriting
 the stored selection. A successful write is read back before reporting saved.
-Run `--settings` again after restarting/updating Dia to attach the add-on and
+Run `--settings` again after restarting Dia to attach the add-on and
 apply that saved selection. No startup task, service or persistent DLL injection
 is installed. A normal Dia restart clears in-memory UI changes until attaching
-again. `--restore` also saves all switches as off.
+again. Use `--unload` to disconnect without changing saved choices, and `--reload`
+to disconnect and attach the current build with those choices. `--restore` also saves all switches as off.
 Closing or leaving Patches is read-only: unload-triggered/programmatic switch
 events do not save changes. Only active-page switch actions or explicit CLI
 changes write preferences. After an upgrade, the launcher prints the loaded
 choices for all eight switches to help verify restart behavior.
 
-When upgrading this experimental build, quit all Dia processes first, then
-replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded
-until the process exits. The controller checks the session's protocol version
-and rejects an older loaded DLL.
+### Disconnect and update without restarting
+
+```powershell
+.\DiaTweaks.exe --unload
+# Replace the EXE and DLL with the new build, then:
+.\DiaTweaks.exe --settings
+# Or reconnect the current/new build and reapply saved choices:
+.\DiaTweaks.exe --reload
+```
+
+**One final restart is required when upgrading from protocol 9 or older.** Those
+versions do not implement detach and lock the original DLL. From protocol 10 on,
+the launcher loads a uniquely named session copy under the user's temporary
+DiaTweaks directory; the downloaded EXE and DLL stay replaceable. A new build's
+launcher automatically detaches a compatible older session before attaching.
+Both files must come from the same build. Each production build gets a distinct
+COM class and control-window class to avoid reusing an old build's factory.
+
+The `--unload` name means **logical detachment**, not physically unmapping the
+DLL. It restores owned changes, removes the Patches page and event handlers,
+unsubscribes on a worker thread, and removes the session's control window. It
+preserves saved choices; `--restore` instead saves all switches as off. If
+restoration, Settings cleanup or unsubscription fails, no replacement session is
+attached. Retry `--unload` or restart Dia.
+
+The inactive DLL remains pinned until Dia exits. Each reattachment creates a new
+cached copy and can retain another diagnostics session/module in memory. Use
+reload for updates and troubleshooting; it is not a polling/refresh operation.
+Cached copies are not automatically deleted. Actual cross-build reattachment in
+Dia still needs on-device testing; automated checks use the mock XAML service.
 
 Each command replaces the active selection. To hide only Chat:
 
@@ -184,9 +215,9 @@ A per-button failure line identifies the failed stage and its HRESULT, plus
 Visibility's metadata bits and source. This distinguishes a rejected policy,
 expired value handle, failed write and failed readback from a discovery error.
 
-The diagnostics DLL and subscription remain resident until Dia exits. Repeated
-commands use the existing message-only control window rather than opening a
-fresh diagnostics session. Tests and a successful build do not establish
+The DLL remains resident until Dia exits; its subscription ends on detachment.
+Repeated commands reuse the existing session. A new subscription is created only
+after explicit detachment/reload or a compatible build replacement. Tests and a successful build do not establish
 runtime compatibility with Dia.
 
 References: [XAML diagnostics entry point](https://learn.microsoft.com/en-us/windows/win32/api/xamlom/nf-xamlom-initializexamldiagnosticsex),

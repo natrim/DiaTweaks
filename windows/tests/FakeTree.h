@@ -97,6 +97,8 @@ public:
     };
     unsigned clears = 0, writes = 0;
     unsigned staleValueWrites = 0;
+    std::atomic<unsigned> unadvises{0};
+    std::atomic<bool> failUnadvise{false};
     bool ignoreWrites = false;
     bool failRegister = false;
     void Drop(InstanceHandle canonical) {
@@ -129,7 +131,7 @@ public:
         }
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE UnadviseVisualTreeChange(IVisualTreeServiceCallback*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE UnadviseVisualTreeChange(IVisualTreeServiceCallback*) override { ++unadvises; return failUnadvise ? E_FAIL : S_OK; }
     HRESULT STDMETHODCALLTYPE GetEnums(unsigned*, EnumType**) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE CreateInstance(BSTR, BSTR value, InstanceHandle* result) override {
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;

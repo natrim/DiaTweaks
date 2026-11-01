@@ -114,6 +114,38 @@ int main() {
         fake->nodes.at(1).omitVisibility = true;
         Check(SendMessageW(hwnd, dt::Query, dt::Chat, 0) == 1, "unreadable visibility does not masquerade as missing selector");
         Check(SendMessageW(hwnd, dt::Stats, dt::MissingVisibility, 0) == 1, "missing visibility is reported");
+        fake->ignoreWrites = false;
+        fake->nodes.at(1).omitVisibility = false;
+        Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == 0, "own a control before detach");
+        fake->failRegister = true;
+        Check(FAILED(static_cast<HRESULT>(SendMessageW(hwnd, dt::Detach, 0, 0))), "failed restoration blocks detach");
+        Check(fake->unadvises == 0 && SendMessageW(hwnd, dt::State, 0, 0) == 1, "failed detach keeps subscription available for retry");
+        fake->failRegister = false;
+        fake->failUnadvise = true;
+        Check(SendMessageW(hwnd, dt::Detach, 0, 0) == S_OK, "detach starts asynchronously after restoration");
+        deadline = GetTickCount64() + 5000;
+        while (IsWindow(hwnd) && SendMessageW(hwnd, dt::State, 0, 0) != -2 && GetTickCount64() < deadline) { Pump(); Sleep(5); }
+        Check(IsWindow(hwnd) && SendMessageW(hwnd, dt::State, 0, 0) == -2, "failed unsubscribe retains retry endpoint");
+        Check(fake->nodes.at(18).value == L"Visible", "detach restores owned control before unsubscribing");
+        fake->failUnadvise = false;
+        Check(SendMessageW(hwnd, dt::Detach, 0, 0) == S_OK, "retry asynchronous unsubscribe");
+        deadline = GetTickCount64() + 5000;
+        while (IsWindow(hwnd) && GetTickCount64() < deadline) { Pump(); Sleep(5); }
+        Check(!IsWindow(hwnd) && fake->unadvises == 2, "successful detach destroys endpoint");
+        VisualElement late{};
+        late.Handle = 18;
+        Check(tap->OnVisualTreeChange({}, late, Add) == S_OK, "late callbacks after detach are ignored");
+        auto replacement = new Tap;
+        Check(SUCCEEDED(replacement->SetSite(static_cast<IVisualTreeService*>(fake))), "new session attaches after detach without exiting process");
+        HWND next = FindWindowExW(HWND_MESSAGE, nullptr, dt::WindowClass, nullptr);
+        deadline = GetTickCount64() + 5000;
+        while (GetTickCount64() < deadline) {
+            Pump();
+            if (SendMessageW(next, dt::State, 0, 0) == 1 && (SendMessageW(next, dt::Query, dt::Spaces, 0) & 0xffff)) break;
+            Sleep(5);
+        }
+        Check(SendMessageW(next, dt::Configure, dt::Spaces, 0) == 0 && fake->nodes.at(18).value == L"Collapsed", "reattached session can patch again");
+        Check(SendMessageW(next, dt::Configure, 0, 0) == 0, "reattached session restores baseline");
         std::cout << "Mock XAML apply, restore, binding and readback checks passed\n";
         // Like a real diagnostics session, the TAP remains resident until this process exits.
         return 0;

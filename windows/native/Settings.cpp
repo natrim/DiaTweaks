@@ -47,15 +47,16 @@ FrameworkElement Named(NavigationView const& nav, wchar_t const* name) {
 struct Settings : std::enable_shared_from_this<Settings> {
     weak_ref<NavigationView> navigation;
     dt::SettingsApi api;
-    bool installed = false, showing = false, syncing = false, disposed = false;
-    event_token loaded{}, unloaded{}, invoked{}, selected{};
+    bool installed = false, showing = false, syncing = false, disposed = false, disposalFailed = false;
+    event_token loaded{}, unloaded{}, invoked{}, selected{}, entryClick{}, restoreClick{};
+    Button restore{nullptr};
     UIElement originalFooter{nullptr};
     Object originalVisibility{nullptr};
     Microsoft::UI::Xaml::Data::Binding visibilityBinding{nullptr};
     StackPanel footer{nullptr};
     ToggleButton entry{nullptr};
     ScrollViewer page{nullptr};
-    struct Row { unsigned mask, required; ToggleSwitch toggle; TextBlock note; };
+    struct Row { unsigned mask, required; ToggleSwitch toggle; TextBlock note; event_token toggled; };
     std::vector<Row> rows;
     TextBlock status{nullptr};
     weak_ref<Panel> overlayParent;
@@ -84,7 +85,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
             if (!nav.Content().try_as<FrameworkElement>()) return;
             entry = XamlReader::Load(dt::SettingsEntryXaml).as<ToggleButton>();
             auto weak = weak_from_this();
-            entry.Click([weak](Object const&, RoutedEventArgs const&) {
+            entryClick = entry.Click([weak](Object const&, RoutedEventArgs const&) {
                 if (auto self = weak.lock()) self->Show();
             });
             originalFooter = nav.PaneFooter();
@@ -132,14 +133,15 @@ struct Settings : std::enable_shared_from_this<Settings> {
             Automation::AutomationProperties::SetName(toggle, tweak.title);
             Automation::AutomationProperties::SetAutomationId(toggle, hstring(L"DiaTweaks.") + tweak.key);
             unsigned mask = tweak.mask;
-            toggle.Toggled([weak, mask](Object const& sender, RoutedEventArgs const&) {
+            auto toggled = toggle.Toggled([weak, mask](Object const& sender, RoutedEventArgs const&) {
                 if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing)
                     self->Change(mask, sender.as<ToggleSwitch>().IsOn());
             });
-            rows.push_back({tweak.mask, tweak.required, toggle, note});
+            rows.push_back({tweak.mask, tweak.required, toggle, note, toggled});
             container.Children().Append(card);
         }
-        page.FindName(L"RestoreButtons").as<Button>().Click([weak](Object const&, RoutedEventArgs const&) {
+        restore = page.FindName(L"RestoreButtons").as<Button>();
+        restoreClick = restore.Click([weak](Object const&, RoutedEventArgs const&) {
             if (auto self = weak.lock()) self->Write(0);
         });
     }
@@ -197,7 +199,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
                 else branch.SetValue(UIElement::VisibilityProperty(), originalVisibility);
             }
             if (entry) entry.IsChecked(false);
-        } catch (...) { lastError = to_hresult(); }
+        } catch (...) { lastError = to_hresult(); disposalFailed = true; }
         syncing = wasSyncing;
         overlayParent = {}; hiddenBranch = {};
         originalVisibility = nullptr; visibilityBinding = nullptr;
@@ -240,6 +242,9 @@ struct Settings : std::enable_shared_from_this<Settings> {
         if (disposed) return;
         disposed = true; Hide();
         try {
+            if (entry) entry.Click(entryClick);
+            if (restore) restore.Click(restoreClick);
+            for (auto const& row : rows) row.toggle.Toggled(row.toggled);
             if (auto nav = navigation.get()) {
                 nav.Loaded(loaded); nav.Unloaded(unloaded);
                 if (installed) {
@@ -251,9 +256,9 @@ struct Settings : std::enable_shared_from_this<Settings> {
                     nav.PaneFooter(originalFooter);
                 }
             }
-        } catch (...) { lastError = to_hresult(); }
+        } catch (...) { lastError = to_hresult(); disposalFailed = true; }
         installed = false;
-        page = nullptr; rows.clear(); entry = nullptr;
+        page = nullptr; rows.clear(); entry = nullptr; restore = nullptr;
         footer = nullptr; originalFooter = nullptr; status = nullptr;
     }
 };
@@ -297,4 +302,14 @@ bool dt::IsSidebarHeader(IInspectable* object) noexcept {
                 return element ? element.Name() : hstring{};
             });
     } catch (...) { return false; }
+}
+
+HRESULT dt::DetachSettings() noexcept {
+    HRESULT result = S_OK;
+    for (auto const& item : settings) {
+        item->Dispose();
+        if (item->disposalFailed) result = E_FAIL;
+    }
+    if (SUCCEEDED(result)) settings.clear();
+    return result;
 }

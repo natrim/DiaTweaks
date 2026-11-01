@@ -30,6 +30,10 @@ jobs:
           if ($LASTEXITCODE -ne 1) { throw 'Invalid option was not rejected.' }
           & .\windows\build\DiaTweaks.exe --hide-chat --restore
           if ($LASTEXITCODE -ne 2) { throw 'Conflicting options were not rejected.' }
+          & .\windows\build\DiaTweaks.exe --unload --hide-chat
+          if ($LASTEXITCODE -ne 2) { throw 'Conflicting unload was not rejected.' }
+          & .\windows\build\DiaTweaks.exe --reload --restore
+          if ($LASTEXITCODE -ne 2) { throw 'Conflicting reload was not rejected.' }
           exit 0
       - uses: actions/upload-artifact@v4
         with:

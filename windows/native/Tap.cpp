@@ -41,6 +41,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::atomic<ULONG> refs{1};
     std::atomic<int> state{0}; // 0 = replaying, 1 = ready, -1 = subscription failed
     std::atomic<unsigned> added{0}, eligible{0};
+    std::atomic<bool> stopping{false};
     IUnknown* site = nullptr;
     IVisualTreeService* service = nullptr;
     IXamlDiagnostics* diagnostics = nullptr;
@@ -61,6 +62,30 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         self->Release();
         return 0;
     }
+    static DWORD WINAPI Unsubscribe(void* context) noexcept {
+        auto self = static_cast<Tap*>(context);
+        HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        HRESULT hr = FAILED(com) ? com : self->service->UnadviseVisualTreeChange(self);
+        if (SUCCEEDED(com)) CoUninitialize();
+        if (!PostMessageW(self->window, dt::DetachComplete, static_cast<WPARAM>(hr), 0)) self->state = -2;
+        self->Release();
+        return 0;
+    }
+    HRESULT BeginDetach() {
+        if (state != 1 && state != -2) return HRESULT_FROM_WIN32(ERROR_BUSY);
+        if (!stopping) {
+            if (Message(window, dt::Configure, 0, 0) != 0 || Message(window, dt::Active, 0, 0) != 0) return E_FAIL;
+            HRESULT hr = dt::DetachSettings();
+            if (FAILED(hr)) return hr;
+        }
+        stopping = true;
+        state = 2;
+        AddRef();
+        HANDLE thread = CreateThread(nullptr, 0, Unsubscribe, this, 0, nullptr);
+        if (!thread) { DWORD error = GetLastError(); Release(); state = -2; return HRESULT_FROM_WIN32(error); }
+        CloseHandle(thread);
+        return S_OK;
+    }
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) noexcept {
         auto self = reinterpret_cast<Tap*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (msg == WM_NCCREATE) {
@@ -75,6 +100,18 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == dt::Version) return dt::ProtocolVersion;
+        if (msg == dt::State) return state.load();
+        if (msg == dt::Detach) return BeginDetach();
+        if (msg == dt::DetachComplete) {
+            if (FAILED(static_cast<HRESULT>(wp))) { state = -2; return 0; }
+            buttons.clear();
+            DestroyWindow(hwnd);
+            UnregisterClassW(dt::WindowClass, module);
+            window = nullptr;
+            Release(); // Release the control window's ownership after teardown.
+            return 0;
+        }
+        if (stopping && msg >= WM_APP) return E_ABORT;
         if (msg == dt::SettingsState) return dt::SettingsStatus(wp);
         if (msg == dt::SaveSelection) return preferences.Write(flags);
         if (msg == dt::LoadSelection) {
@@ -428,6 +465,7 @@ public:
         return site ? site->QueryInterface(iid, out) : E_FAIL;
     }
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation, VisualElement element, VisualMutationType mutation) noexcept override {
+        if (stopping) return S_OK;
         // Only queue handles. All property access and layout changes happen later on the UI thread.
         UINT msg = mutation == Remove ? dt::RemoveNode : dt::AddNode;
         dt::Target namedTarget = dt::None;

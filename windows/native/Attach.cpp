@@ -44,9 +44,11 @@ std::set<DWORD> FindDia() {
 }
 HWND FindTap(DWORD pid) {
     HWND hwnd = nullptr;
-    while ((hwnd = FindWindowExW(HWND_MESSAGE, hwnd, dt::WindowClass, nullptr))) {
+    while ((hwnd = FindWindowExW(HWND_MESSAGE, hwnd, nullptr, nullptr))) {
+        wchar_t cls[160]{};
+        GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
         DWORD owner = 0; GetWindowThreadProcessId(hwnd, &owner);
-        if (owner == pid) return hwnd;
+        if (owner == pid && std::wstring_view(cls).starts_with(dt::WindowPrefix)) return hwnd;
     }
     return nullptr;
 }
@@ -55,6 +57,40 @@ LRESULT Send(HWND hwnd, UINT message, WPARAM data = 0) {
     if (!SendMessageTimeoutW(hwnd, message, data, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 5000, &result))
         throw std::runtime_error("Dia did not respond to the patch controller.");
     return static_cast<LRESULT>(result);
+}
+bool ThisBuild(HWND hwnd) {
+    wchar_t cls[160]{};
+    GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
+    return wcscmp(cls, dt::WindowClass) == 0;
+}
+void DetachSession(HWND hwnd) {
+    if (Send(hwnd, dt::State) != 2) {
+        HRESULT hr = static_cast<HRESULT>(Send(hwnd, dt::Detach));
+        if (FAILED(hr)) throw std::runtime_error("Could not restore controls or remove Settings UI. The session remains loaded; no new build was attached.");
+    }
+    ULONGLONG deadline = GetTickCount64() + 15000;
+    while (IsWindow(hwnd) && GetTickCount64() < deadline) {
+        try {
+            if (Send(hwnd, dt::State) == -2)
+                throw std::runtime_error("Unsubscription failed. Retry --unload; no new build was attached.");
+        } catch (...) { if (!IsWindow(hwnd)) return; throw; }
+        Sleep(50);
+    }
+    if (IsWindow(hwnd)) throw std::runtime_error("Detach timed out. No new build was attached; retry --unload.");
+}
+fs::path ShadowCopy(fs::path const& source) {
+    wchar_t temp[32768]{};
+    DWORD length = GetTempPathW(static_cast<DWORD>(std::size(temp)), temp);
+    if (!length || length >= std::size(temp)) throw std::runtime_error("Cannot locate the session cache.");
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid))) throw std::runtime_error("Cannot create a session ID.");
+    wchar_t id[40]{};
+    if (!StringFromGUID2(guid, id, static_cast<int>(std::size(id)))) throw std::runtime_error("Cannot format a session ID.");
+    fs::path directory = fs::path(temp) / L"DiaTweaks" / id;
+    fs::create_directories(directory);
+    auto copy = directory / L"DiaTweaks.Tap.dll";
+    fs::copy_file(source, copy);
+    return copy;
 }
 void Diagnostics(HWND hwnd) {
     std::wcerr << L"Discovery: added=" << Send(hwnd, dt::Stats, dt::Added)
@@ -140,8 +176,9 @@ void Help() {
                << L"  DiaTweaks.exe --settings [--pid NUMBER]\n"
                << L"  DiaTweaks.exe [hide options] [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --restore [--pid NUMBER]\n"
+               << L"  DiaTweaks.exe --unload | --reload [--pid NUMBER]\n"
                << L"With no arguments, attach the Settings UI and apply saved preferences.\n"
-               << L"Each command replaces the active selection. Restart Dia to unload the add-on.\n";
+               << L"Hide commands replace the selection. --unload detaches; --reload reapplies saved settings.\n";
     for (auto const& tweak : dt::Tweaks) std::wcout << L"  " << tweak.option << L"  " << tweak.title << L'\n';
 }
 }
@@ -150,7 +187,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         unsigned flags = 0;
         DWORD pid = 0;
-        bool restore = false;
+        bool restore = false, unload = false, reload = false;
         bool settingsUi = argc == 1;
         for (int i = 1; i < argc; ++i) {
             std::wstring arg(argv[i]);
@@ -160,6 +197,8 @@ int wmain(int argc, wchar_t** argv) {
             if (selectedMask) flags |= selectedMask;
             else if (arg == L"--restore") restore = true;
             else if (arg == L"--settings") settingsUi = true;
+            else if (arg == L"--unload" || arg == L"--detach") unload = true;
+            else if (arg == L"--reload") { reload = true; settingsUi = true; }
             else if (arg == L"--pid" && i + 1 < argc) {
                 std::wstring text(argv[++i]);
                 if (text.empty() || text.find_first_not_of(L"0123456789") != std::wstring::npos)
@@ -169,7 +208,7 @@ int wmain(int argc, wchar_t** argv) {
                 pid = static_cast<DWORD>(number);
             } else throw std::runtime_error("Unknown or incomplete argument. Run with --help.");
         }
-        if ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))) { Help(); return 2; }
+        if ((unload && (settingsUi || reload || flags || restore)) || (!unload && ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))))) { Help(); return 2; }
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
         if (!pid) {
@@ -179,17 +218,26 @@ int wmain(int argc, wchar_t** argv) {
         }
         HWND window = FindTap(pid);
         if (window && Send(window, dt::Version) != dt::ProtocolVersion)
-            throw std::runtime_error("An older DiaTweaks DLL is still loaded. Quit all Dia processes, replace both the EXE and DLL, then reopen Dia.");
+            throw std::runtime_error("This older session cannot detach. Restart Dia once to install the reload-capable build.");
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
         struct Com { ~Com() { CoUninitialize(); } } comScope;
+        if (window && (unload || reload || !ThisBuild(window))) {
+            DetachSession(window);
+            window = nullptr;
+        }
+        if (unload) {
+            std::wcout << L"DiaTweaks detached. Controls restored; saved choices preserved.\n"
+                       << L"The inactive DLL remains resident. Source files are unlocked; run --settings to attach again.\n";
+            return 0;
+        }
         if (!window) {
             wchar_t executable[32768]{};
             DWORD count = GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)));
             if (!count || count >= std::size(executable)) throw std::runtime_error("Cannot locate this executable.");
             fs::path tap = fs::path(executable).parent_path() / L"DiaTweaks.Tap.dll";
             if (!fs::is_regular_file(tap)) throw std::runtime_error("Keep DiaTweaks.Tap.dll beside DiaTweaks.exe.");
-            HRESULT hr = Attach(pid, tap);
+            HRESULT hr = Attach(pid, ShadowCopy(tap));
             if (FAILED(hr)) {
                 std::wcerr << L"XAML diagnostics attach failed: 0x" << std::hex << static_cast<unsigned long>(hr)
                            << L". No button override was requested.\n";
@@ -204,7 +252,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (!window || Send(window, dt::State) != 1)
             throw std::runtime_error("The XAML tree subscription did not become ready. Restart Dia before retrying.");
-        if (Send(window, dt::Version) != dt::ProtocolVersion)
+        if (Send(window, dt::Version) != dt::ProtocolVersion || !ThisBuild(window))
             throw std::runtime_error("EXE and DLL versions differ. Quit Dia and replace both files together.");
         if (settingsUi) {
             // Read from the same process/package view that saves UI changes.
