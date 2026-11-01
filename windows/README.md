@@ -2,8 +2,8 @@
 
 This is an initial native Windows implementation, **not a validated port of all
 DiaTweaks features**. Hiding, restoration and repeated hiding have been reported
-working on Windows, including the Settings UI. The latest persistence fix still
-needs confirmation across a real Dia restart.
+working on Windows, including the Settings UI. Saved settings across runs have also been confirmed. The four new switches below
+need on-device confirmation; whole-toolbar hiding is experimental.
 The macOS installer and Rust CLI do not manage this backend.
 
 ## Implemented scope
@@ -13,14 +13,20 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--settings` (or no arguments) | Settings UI and saved selection | Dia Settings → Patches |
 | `--hide-chat` | `hideChatButton` | `ChatButton` |
 | `--hide-sidebar` | `hideSidebarButton` | `SidebarToggleButton` |
-| `--restore` | Restore this session's button overrides | Saved original properties |
+| `--hide-downloads` | Windows addition | `DownloadsButton` |
+| `--hide-bookmark` | Windows addition | `BookmarkButton` |
+| `--hide-extensions` | Windows addition | `PinnedExtensionsRepeater` and optional `PinnedExtensionsOverflowButton` |
+| `--hide-toolbar` | `hideToolbar` (experimental) | `NavigationBarHost` and optional `BookmarksBarHost` |
+| `--restore` | Restore this session's overrides | Saved original properties |
 
-Selectors were observed in a complete UI Automation inspection of Dia
-`1.5.0.588`, x64, with sidebar tabs. That inspection establishes the controls'
-identifiers. The settings layout, both tab layouts and page layout after
-collapsing a button still need testing on Windows. No claim is made about layout reflow.
+The button and extensions selectors were observed in a complete UI Automation
+inspection of Dia `1.5.0.588`, x64, with sidebar tabs. Toolbar hosts were identified
+in the official Windows package's compiled ContentStack layout. Only the navigation
+and bookmarks hosts are targeted; the info-bar host and window caption are preserved.
+Both tab layouts and page layout after collapsing toolbar hosts still need testing.
+No claim is made about layout reflow or hover reveal.
 
-The toolbar, hover reveal, edge-to-edge content, corner shapes, recent tabs,
+Hover reveal, edge-to-edge content, corner shapes, recent tabs,
 Chats library button, tab grouping, active-window styling
 and automatic attachment after restart/update are not implemented. Dia's
 built-in updater is unchanged. WSL cannot run this backend.
@@ -57,8 +63,11 @@ Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
 ```
 
 Open Dia's Settings and choose **Patches** at the bottom of its sidebar.
-The page contains **Hide Chat button** and **Hide sidebar button** switches,
-availability notes, and a **Restore buttons** action. Switches apply immediately
+The page contains switches for the toolbar, Chat, sidebar, downloads, bookmark,
+and extensions, availability notes, and a **Restore defaults** action.
+Whole-toolbar hiding disables individual switches while preserving their saved
+choices. Showing the toolbar again reapplies those choices. Optional bookmarks
+and overflow controls may be absent; they are patched if they appear later. Switches apply immediately
 and follow CLI changes. The page uses WinUI controls and Dia's theme resources.
 Choosing one of Dia's own categories returns to its original content.
 
@@ -71,11 +80,11 @@ the stored selection. A successful write is read back before reporting saved.
 Run `--settings` again after restarting/updating Dia to attach the add-on and
 apply that saved selection. No startup task, service or persistent DLL injection
 is installed. A normal Dia restart clears in-memory UI changes until attaching
-again. `--restore` also saves both switches as off.
+again. `--restore` also saves all switches as off.
 Closing or leaving Patches is read-only: unload-triggered/programmatic switch
 events do not save changes. Only active-page switch actions or explicit CLI
 changes write preferences. After an upgrade, the launcher prints the loaded
-`hide-chat` and `hide-sidebar` choices to help verify restart behavior.
+choices for all six switches to help verify restart behavior.
 
 When upgrading this experimental build, quit all Dia processes first, then
 replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded
@@ -94,7 +103,7 @@ To restore the previous visibility values:
 .\DiaTweaks.exe --restore
 ```
 
-The controller checks each requested button's effective Visibility after setting
+The controller checks each requested control's effective Visibility after setting
 it. A missing selector, unsupported property source, binding, failed readback or
 attachment error returns non-zero. If a new selection fails, it attempts to
 restore the previous selection. Restart Dia if restoration fails or attachment
@@ -129,7 +138,7 @@ original branch visibility/binding when leaving Patches. Closing Settings
 removes the injected UI and event handlers. Opening a new Settings window adds
 the entry again. Layout detection failures leave Dia's settings intact.
 
-`native/Tap.cpp` subscribes once, queues button handles, and reads/modifies XAML
+`native/Tap.cpp` subscribes once, queues control handles, and reads/modifies XAML
 properties on the UI thread. Only exact observed AutomationIds match. It changes
 plain Visibility values and refuses bindings, animations and visual-state
 sources. For restoration it retains a plain local value or clears its override
@@ -153,7 +162,7 @@ nonempty explicit AutomationId takes precedence. This follows WinUI's
 [`CAutomationPeer::GetAutomationIdHelper`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/dxaml/xcp/core/core/elements/AutomationPeer.cpp).
 
 On failure, a `Discovery:` line reports numeric counters (received additions,
-eligible button types, inspected handles, property-query failures, empty IDs,
+eligible control types, inspected handles, property-query failures, empty IDs,
 matches through x:Name, tracked controls, missing Visibility properties and
 detached owned overrides).
 It also includes the last failed discovery HRESULT. It does not print UI text,

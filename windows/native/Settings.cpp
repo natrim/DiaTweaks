@@ -12,6 +12,7 @@
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Data.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Markup.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.Foundation.h>
@@ -53,8 +54,9 @@ struct Settings : std::enable_shared_from_this<Settings> {
     StackPanel footer{nullptr};
     ToggleButton entry{nullptr};
     ScrollViewer page{nullptr};
-    ToggleSwitch chat{nullptr}, sidebar{nullptr};
-    TextBlock status{nullptr}, chatUnavailable{nullptr}, sidebarUnavailable{nullptr};
+    struct Row { unsigned mask, required; ToggleSwitch toggle; TextBlock note; };
+    std::vector<Row> rows;
+    TextBlock status{nullptr};
     weak_ref<Panel> overlayParent;
     weak_ref<FrameworkElement> hiddenBranch;
 
@@ -117,18 +119,25 @@ struct Settings : std::enable_shared_from_this<Settings> {
     void BuildPage() {
         if (page) return;
         page = XamlReader::Load(dt::SettingsPageXaml).as<ScrollViewer>();
-        chat = page.FindName(L"HideChat").as<ToggleSwitch>();
-        sidebar = page.FindName(L"HideSidebar").as<ToggleSwitch>();
         status = page.FindName(L"Status").as<TextBlock>();
-        chatUnavailable = page.FindName(L"ChatUnavailable").as<TextBlock>();
-        sidebarUnavailable = page.FindName(L"SidebarUnavailable").as<TextBlock>();
+        auto container = page.FindName(L"TweakRows").as<StackPanel>();
         auto weak = weak_from_this();
-        chat.Toggled([weak](Object const&, RoutedEventArgs const&) {
-            if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing) self->Change(dt::Chat, self->chat.IsOn());
-        });
-        sidebar.Toggled([weak](Object const&, RoutedEventArgs const&) {
-            if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing) self->Change(dt::Sidebar, self->sidebar.IsOn());
-        });
+        for (auto const& tweak : dt::Tweaks) {
+            auto card = XamlReader::Load(dt::SettingsRowXaml).as<Border>();
+            card.FindName(L"Title").as<TextBlock>().Text(tweak.title);
+            card.FindName(L"Description").as<TextBlock>().Text(tweak.detail);
+            auto toggle = card.FindName(L"Switch").as<ToggleSwitch>();
+            auto note = card.FindName(L"Unavailable").as<TextBlock>();
+            Automation::AutomationProperties::SetName(toggle, tweak.title);
+            Automation::AutomationProperties::SetAutomationId(toggle, hstring(L"DiaTweaks.") + tweak.key);
+            unsigned mask = tweak.mask;
+            toggle.Toggled([weak, mask](Object const& sender, RoutedEventArgs const&) {
+                if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing)
+                    self->Change(mask, sender.as<ToggleSwitch>().IsOn());
+            });
+            rows.push_back({tweak.mask, tweak.required, toggle, note});
+            container.Children().Append(card);
+        }
         page.FindName(L"RestoreButtons").as<Button>().Click([weak](Object const&, RoutedEventArgs const&) {
             if (auto self = weak.lock()) self->Write(0);
         });
@@ -164,7 +173,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
             branch.Visibility(Visibility::Collapsed);
             entry.IsChecked(true);
             Refresh();
-            chat.Focus(FocusState::Programmatic);
+            for (auto const& row : rows) if (row.toggle.IsEnabled()) { row.toggle.Focus(FocusState::Programmatic); break; }
             lastError = S_OK;
         } catch (...) {
             lastError = to_hresult();
@@ -197,12 +206,15 @@ struct Settings : std::enable_shared_from_this<Settings> {
         syncing = true;
         try {
             unsigned flags = api.read(api.context);
-            chat.IsOn((flags & dt::Chat) != 0); sidebar.IsOn((flags & dt::Sidebar) != 0);
-            bool chatReady = api.available(api.context, dt::Chat);
-            bool sidebarReady = api.available(api.context, dt::Sidebar);
-            chat.IsEnabled(chatReady); sidebar.IsEnabled(sidebarReady);
-            chatUnavailable.Visibility(chatReady ? Visibility::Collapsed : Visibility::Visible);
-            sidebarUnavailable.Visibility(sidebarReady ? Visibility::Collapsed : Visibility::Visible);
+            for (auto const& row : rows) {
+                row.toggle.IsOn((flags & row.mask) != 0);
+                bool toolbarHidden = (flags & dt::Toolbar) && !(row.mask & dt::Toolbar);
+                bool ready = api.available(api.context, row.required);
+                row.toggle.IsEnabled(ready && !toolbarHidden);
+                row.note.Text(toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
+                                            : L"Not available in the current browser window.");
+                row.note.Visibility(ready && !toolbarHidden ? Visibility::Collapsed : Visibility::Visible);
+            }
         } catch (...) { lastError = to_hresult(); }
         syncing = false;
     }
@@ -236,9 +248,8 @@ struct Settings : std::enable_shared_from_this<Settings> {
             }
         } catch (...) { lastError = to_hresult(); }
         installed = false;
-        page = nullptr; chat = nullptr; sidebar = nullptr; entry = nullptr;
+        page = nullptr; rows.clear(); entry = nullptr;
         footer = nullptr; originalFooter = nullptr; status = nullptr;
-        chatUnavailable = nullptr; sidebarUnavailable = nullptr;
     }
 };
 std::vector<std::shared_ptr<Settings>> settings;

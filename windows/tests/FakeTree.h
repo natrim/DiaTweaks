@@ -68,6 +68,7 @@ public:
         const wchar_t* name = L"";
         const wchar_t* type = L"Microsoft.UI.Xaml.Controls.Button";
         bool omitVisibility = false;
+        const wchar_t* defaultValue = L"Visible";
     };
     std::map<InstanceHandle, Node> nodes{
         {1, {L"", L"Visible", false, false, L"ChatButton"}},
@@ -75,7 +76,13 @@ public:
         {3, {L"CloseButton", L"Visible", false, false}},
         {4, {L"OtherButton", L"Visible", false, false, L"ChatButton"}},
         {5, {L"", L"Visible", false, false, L"ChatButtonLabel"}},
-        {6, {L"ChatButton", L"Visible", false, false, L"ChatButton", L"Microsoft.UI.Xaml.Controls.TextBlock"}}
+        {6, {L"ChatButton", L"Visible", false, false, L"ChatButton", L"Microsoft.UI.Xaml.Controls.TextBlock"}},
+        {7, {L"DownloadsButton", L"Visible", false, false}},
+        {8, {L"BookmarkButton", L"Visible", true, false}},
+        {9, {L"", L"Visible", false, false, L"PinnedExtensionsRepeater", L"ItemsRepeater"}},
+        {10, {L"PinnedExtensionsOverflowButton", L"Visible", false, false}},
+        {11, {L"", L"Visible", false, false, L"NavigationBarHost", L"ContentPresenter"}},
+        {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"ContentPresenter", false, L"Collapsed"}}
     };
     unsigned clears = 0, writes = 0;
     unsigned staleValueWrites = 0;
@@ -161,7 +168,7 @@ public:
         if (index != 11 || !nodes.count(canonical)) return E_INVALIDARG;
         if (assignedValue[canonical]) retiredValues.insert(assignedValue[canonical]);
         assignedValue[canonical] = 0;
-        nodes.at(canonical).value = L"Visible"; nodes.at(canonical).local = false; ++clears;
+        nodes.at(canonical).value = nodes.at(canonical).defaultValue; nodes.at(canonical).local = false; ++clears;
         ReinsertIfVisible(canonical);
         return S_OK;
     }

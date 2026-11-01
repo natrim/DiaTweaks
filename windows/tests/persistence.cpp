@@ -64,24 +64,24 @@ int main() {
         Check(second.Send(dt::Query, dt::Chat) == 0x10001 && second.Send(dt::Query, dt::Sidebar) == 0x10001, "saved choice hides both controls");
         Check(Read(app) == dt::All && Read(launcher) == 0, "attachment preserves saved preferences and ignores launcher defaults");
         Check(second.Send(dt::ChangeAndSave, dt::Sidebar) == S_OK && Read(app) == dt::Sidebar, "latest UI change persists");
-        Check(second.Send(dt::ChangeAndSave, 8) < 0 && Read(app) == dt::Sidebar, "rejected setting cannot overwrite saved choice");
+        Check(second.Send(dt::ChangeAndSave, dt::UnsupportedFlag) < 0 && Read(app) == dt::Sidebar, "rejected setting cannot overwrite saved choice");
 
         Session third(app);
         Check(third.Send(dt::LoadSelection) == dt::Sidebar, "second reattachment loads the latest selection");
         Check(third.Send(dt::Configure, dt::Sidebar) == 0, "apply latest saved choice");
         Check(third.Send(dt::Configure, 0) == 0 && third.Send(dt::SaveSelection) == S_OK, "explicit restore saves off");
         Check(Read(app) == 0, "restore persisted off");
-        Check(SUCCEEDED(app.Write(dt::Chat)) && FAILED(app.Write(8)) && Read(app) == dt::Chat, "invalid mask cannot overwrite a valid saved value");
+        Check(SUCCEEDED(app.Write(dt::Chat)) && FAILED(app.Write(dt::UnsupportedFlag)) && Read(app) == dt::Chat, "invalid mask cannot overwrite a valid saved value");
 
         HKEY appKey = nullptr;
         Check(RegOpenKeyExW(registry.key, app.path, 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &appKey) == ERROR_SUCCESS, "open test app key");
-        DWORD invalidMask = 8;
+        DWORD invalidMask = dt::UnsupportedFlag;
         Check(RegSetValueExW(appKey, L"WindowsFlags", 0, REG_DWORD, reinterpret_cast<BYTE*>(&invalidMask), sizeof(invalidMask)) == ERROR_SUCCESS, "seed unsupported mask");
         unsigned untouched = 777;
         Check(FAILED(app.Read(untouched)) && untouched == 777, "invalid value is an error, not an off default");
         Check(third.Send(dt::LoadSelection) < 0, "IPC propagates read errors");
         DWORD raw = 0, size = sizeof(raw);
-        Check(RegGetValueW(appKey, nullptr, L"WindowsFlags", RRF_RT_REG_DWORD, nullptr, &raw, &size) == ERROR_SUCCESS && raw == 8, "failed load leaves the stored value untouched");
+        Check(RegGetValueW(appKey, nullptr, L"WindowsFlags", RRF_RT_REG_DWORD, nullptr, &raw, &size) == ERROR_SUCCESS && raw == dt::UnsupportedFlag, "failed load leaves the stored value untouched");
         const wchar_t bad[] = L"invalid";
         Check(RegSetValueExW(appKey, L"WindowsFlags", 0, REG_SZ, reinterpret_cast<const BYTE*>(bad), sizeof(bad)) == ERROR_SUCCESS, "seed invalid preference type");
         Check(third.Send(dt::LoadSelection) < 0, "wrong registry type is not silently read as off");

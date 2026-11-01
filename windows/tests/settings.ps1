@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $source = [IO.File]::ReadAllText((Join-Path $root 'native/SettingsPage.h'))
 $fragments = [regex]::Matches($source, '(?s)LR"XAML\((.*?)\)XAML"')
-if ($fragments.Count -ne 2) { throw 'Expected a page and a sidebar-entry XAML fragment.' }
+if ($fragments.Count -ne 3) { throw 'Expected a page, a row and a sidebar-entry XAML fragment.' }
 $names = @{}
 foreach ($fragment in $fragments) {
     [xml]$xml = $fragment.Groups[1].Value
@@ -14,11 +14,11 @@ foreach ($fragment in $fragments) {
         $names[$name] = $node
     }
 }
-foreach ($name in @('HideChat', 'HideSidebar')) {
-    if (-not $names.ContainsKey($name) -or $names[$name].LocalName -ne 'ToggleSwitch') { throw "Missing toggle $name" }
-    if (-not $names[$name].GetAttribute('AutomationProperties.Name')) { throw "Missing accessible name: $name" }
-}
-foreach ($name in @('RestoreButtons', 'Status', 'ChatUnavailable', 'SidebarUnavailable', 'DiaTweaksEntry')) {
+foreach ($name in @('TweakRows', 'Switch', 'Title', 'Description', 'Unavailable', 'RestoreButtons', 'Status', 'DiaTweaksEntry')) {
     if (-not $names.ContainsKey($name)) { throw "Missing settings control: $name" }
 }
+if ($names['Switch'].LocalName -ne 'ToggleSwitch') { throw 'Expected a ToggleSwitch row.' }
+$implementation = [IO.File]::ReadAllText((Join-Path $root 'native/Settings.cpp'))
+if (-not $implementation.Contains('AutomationProperties::SetName(toggle, tweak.title)') -or
+    -not $implementation.Contains('for (auto const& tweak : dt::Tweaks)')) { throw 'Catalog rows must receive accessible names.' }
 Write-Host 'Settings XAML parses and all wired controls have unique names.'

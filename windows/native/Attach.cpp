@@ -73,11 +73,12 @@ void Diagnostics(HWND hwnd) {
         L"hold-target", L"create-collapsed", L"set-collapsed", L"verify-collapsed", L"create-original",
         L"set-original", L"clear-original", L"verify-restored"
     };
-    for (unsigned target : {dt::Chat, dt::Sidebar}) {
+    for (auto const& item : dt::NativeTargets) {
+        unsigned target = item.flag;
         auto detail = [&](dt::FailureField field) { return Send(hwnd, dt::Failure, target | (static_cast<WPARAM>(field) << 8)); };
         auto stage = static_cast<unsigned>(detail(dt::FailureStage));
         if (!stage) continue;
-        std::wcerr << (target == dt::Chat ? L"ChatButton" : L"SidebarToggleButton")
+        std::wcerr << item.id
                    << L" failure: stage=" << (stage < std::size(stages) ? stages[stage] : L"unknown")
                    << L", hr=0x" << std::hex << static_cast<unsigned long>(detail(dt::FailureError))
                    << L", metadata=0x" << static_cast<unsigned long long>(detail(dt::FailureMetadata))
@@ -137,10 +138,11 @@ HRESULT Attach(DWORD pid, const fs::path& tap) {
 void Help() {
     std::wcout << L"DiaTweaks for Windows (experimental, x64)\n"
                << L"  DiaTweaks.exe --settings [--pid NUMBER]\n"
-               << L"  DiaTweaks.exe --hide-chat [--hide-sidebar] [--pid NUMBER]\n"
+               << L"  DiaTweaks.exe [hide options] [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --restore [--pid NUMBER]\n"
                << L"With no arguments, attach the Settings UI and apply saved preferences.\n"
                << L"Each command replaces the active selection. Restart Dia to unload the add-on.\n";
+    for (auto const& tweak : dt::Tweaks) std::wcout << L"  " << tweak.option << L"  " << tweak.title << L'\n';
 }
 }
 
@@ -153,8 +155,9 @@ int wmain(int argc, wchar_t** argv) {
         for (int i = 1; i < argc; ++i) {
             std::wstring arg(argv[i]);
             if (arg == L"--help" || arg == L"-h") { Help(); return 0; }
-            if (arg == L"--hide-chat") flags |= dt::Chat;
-            else if (arg == L"--hide-sidebar") flags |= dt::Sidebar;
+            unsigned selectedMask = 0;
+            for (auto const& tweak : dt::Tweaks) if (arg == tweak.option) selectedMask = tweak.mask;
+            if (selectedMask) flags |= selectedMask;
             else if (arg == L"--restore") restore = true;
             else if (arg == L"--settings") settingsUi = true;
             else if (arg == L"--pid" && i + 1 < argc) {
@@ -210,16 +213,18 @@ int wmain(int argc, wchar_t** argv) {
             if (saved < 0 || (static_cast<unsigned long long>(saved) & ~static_cast<unsigned long long>(dt::All)))
                 throw std::runtime_error("Could not read Dia's saved preferences. No selection was changed or saved.");
             flags = static_cast<unsigned>(saved);
-            std::wcout << L"Loaded saved selection: hide-chat=" << ((flags & dt::Chat) != 0)
-                       << L", hide-sidebar=" << ((flags & dt::Sidebar) != 0) << L'\n';
+            std::wcout << L"Loaded saved selection:";
+            for (auto const& tweak : dt::Tweaks)
+                std::wcout << L" " << tweak.option << L"=" << ((flags & tweak.mask) != 0);
+            std::wcout << L'\n';
         }
         // Posted replay notifications may still be pending when Advise returns.
         if (!restore) {
             ULONGLONG deadline = GetTickCount64() + 5000;
             do {
                 bool found = true;
-                for (unsigned target : {dt::Chat, dt::Sidebar}) if (flags & target)
-                    found = found && ((Send(window, dt::Query, target) & 0xffff) != 0);
+                for (auto const& item : dt::NativeTargets) if ((flags & item.flag) && !item.optional)
+                    found = found && ((Send(window, dt::Query, item.flag) & 0xffff) != 0);
                 if (found) break;
                 Sleep(50);
             } while (GetTickCount64() < deadline);
@@ -233,7 +238,8 @@ int wmain(int argc, wchar_t** argv) {
             ULONGLONG deadline = GetTickCount64() + 2000;
             do {
                 bool verified = Send(window, dt::Active) == 0;
-                for (unsigned target : {dt::Chat, dt::Sidebar}) if (restoring & target) {
+                for (auto const& item : dt::NativeTargets) if (restoring & item.flag) {
+                    unsigned target = item.flag;
                     auto counts = static_cast<unsigned>(Send(window, dt::QueryVisible, target));
                     verified = verified && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
                 }
@@ -243,13 +249,15 @@ int wmain(int argc, wchar_t** argv) {
             ok = ok && Send(window, dt::Active) == 0;
         }
         unsigned reporting = restore ? (restoring | previous) : flags;
-        for (unsigned target : {dt::Chat, dt::Sidebar}) if (reporting & target) {
+        for (auto const& item : dt::NativeTargets) if (reporting & item.flag) {
+            unsigned target = item.flag;
             auto counts = static_cast<unsigned>(Send(window, restore ? dt::QueryVisible : dt::Query, target));
             unsigned matched = counts & 0xffff, hidden = counts >> 16;
-            std::wcout << (target == dt::Chat ? L"ChatButton" : L"SidebarToggleButton")
+            std::wcout << item.id
                        << L": " << hidden << L"/" << matched << (restore ? L" visible" : L" collapsed")
                        << L", owned overrides=" << Send(window, dt::Active, target) << L'\n';
-            if (!restore || (restoring & target)) ok = ok && matched != 0 && hidden == matched;
+            if (!restore || (restoring & target))
+                ok = ok && ((!restore && item.optional && matched == 0) || (matched != 0 && hidden == matched));
         }
         if (!ok) {
             // Restore the previous selection if a new selection was only partly applied.

@@ -14,8 +14,25 @@ int main() {
     Check(dt::IsButtonType(L"Button") && dt::IsButtonType(L"Microsoft.UI.Xaml.Controls.Button"), "short and full type names");
     Check(!dt::IsButtonType(L"Microsoft.UI.Xaml.Controls.TextBlock"), "a named label is not a button");
     for (auto id : {L"ChatButtonLabel", L"chatbutton", L"OtherChatButton", L"SidebarToggleButton2",
-                    L"BackButton", L"BookmarkButton", L"DownloadsButton", L"CloseButton", L"", L"ChatButton\n"})
+                    L"BackButton", L"CloseButton", L"", L"ChatButton\n"})
         Check(dt::Identify(id) == dt::None, "unrelated UI must remain untouched");
+    Check(dt::Identify(L"DownloadsButton") == dt::Downloads, "downloads selector");
+    Check(dt::Identify(L"BookmarkButton") == dt::Bookmark, "bookmark selector");
+    Check(dt::Identify(L"PinnedExtensionsOverflowButton") == dt::ExtensionsOverflow, "extensions overflow selector");
+    Check(dt::Identify(L"PinnedExtensionsRepeater", dt::Family::Repeater) == dt::Extensions, "extension repeater");
+    Check(dt::Identify(L"NavigationBarHost", dt::Family::Host) == dt::Toolbar, "navigation host");
+    Check(dt::Identify(L"BookmarksBarHost", dt::Family::Host) == dt::BookmarksBar, "bookmarks host");
+    Check(dt::Identify(L"PinnedExtensionsRepeater") == dt::None &&
+          dt::Identify(L"NavigationBarHost") == dt::None &&
+          dt::Identify(L"ChatButton", dt::Family::Host) == dt::None, "selector type boundaries");
+    Check(dt::Identify(L"OverflowButton") == dt::None &&
+          dt::Identify(L"NavigationChromeHost", dt::Family::Host) == dt::None, "unrelated menu and info-bar parent excluded");
+    unsigned covered = 0;
+    for (auto const& tweak : dt::Tweaks) {
+        Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");
+        covered |= tweak.mask;
+    }
+    Check(covered == dt::All && (dt::All & dt::UnsupportedFlag) == 0, "catalog covers persisted mask");
     Check(dt::IsProperty(L"Microsoft.UI.Xaml.Automation.AutomationProperties.AutomationId", L"AutomationId"), "attached property");
     Check(!dt::IsProperty(L"NotAutomationId", L"AutomationId"), "property suffix boundary");
     Check(dt::CanOverride(true, true, false, L"Visible"), "plain visible property");

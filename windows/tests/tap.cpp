@@ -4,6 +4,7 @@ int main() {
     try {
         Check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "COM");
         module = GetModuleHandleW(nullptr);
+        constexpr unsigned Legacy = dt::Chat | dt::Sidebar;
         auto fake = new FakeTree;
         auto tap = new Tap;
         Check(SUCCEEDED(tap->SetSite(static_cast<IVisualTreeService*>(fake))), "attach mock");
@@ -20,19 +21,20 @@ int main() {
         Check(SendMessageW(hwnd, dt::Version, 0, 0) == dt::ProtocolVersion, "protocol version");
         Check((SendMessageW(hwnd, dt::Query, dt::Chat, 0) & 0xffff) == 1, "x:Name fallback discovers exactly one ChatButton");
         Check((SendMessageW(hwnd, dt::Query, dt::Sidebar, 0) & 0xffff) == 1, "short Button type is accepted");
-        Check(SendMessageW(hwnd, dt::Stats, dt::NamedMatches, 0) == 1, "fallback counted for diagnostics");
-        Check(SendMessageW(hwnd, dt::Configure, dt::All, 0) == 0, "apply both buttons on UI thread");
+        Check(SendMessageW(hwnd, dt::Stats, dt::NamedMatches, 0) == 4, "fallback counted for diagnostics");
+        Check(SendMessageW(hwnd, dt::Configure, Legacy, 0) == 0, "apply both buttons on UI thread");
         Check(fake->nodes.at(1).value == L"Collapsed" && fake->nodes.at(2).value == L"Collapsed", "both hidden");
         Check(fake->nodes.at(3).value == L"Visible", "window close button preserved");
         for (auto handle : {4ull, 5ull, 6ull})
             Check(fake->nodes.at(handle).value == L"Visible", "explicit ID precedence and label/type exclusions");
         unsigned writes = fake->writes;
-        Check(SendMessageW(hwnd, dt::Configure, dt::All, 0) == 0 && fake->writes == writes, "idempotent apply");
+        Check(SendMessageW(hwnd, dt::Configure, Legacy, 0) == 0 && fake->writes == writes, "idempotent apply");
         fake->Drop(1);
         Pump();
         Check(SendMessageW(hwnd, dt::Active, 0, 0) == 2, "removed visual retains its owned override");
+        Check(SendMessageW(hwnd, dt::Query, dt::Chat, 0) == 0x10001, "owned detached child remains verifiable");
         Check(SendMessageW(hwnd, dt::Stats, dt::DetachedOverrides, 0) == 1, "detached override reported");
-        Check(SendMessageW(hwnd, dt::OwnedMask, 0, 0) == dt::All, "restore includes detached chat");
+        Check(SendMessageW(hwnd, dt::OwnedMask, 0, 0) == Legacy, "restore includes detached chat");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore");
         Pump();
         Check(fake->clears == 1 && fake->nodes.at(1).value == L"Visible" && !fake->nodes.at(1).local, "default restored by clearing local value");
@@ -50,6 +52,21 @@ int main() {
                 Check(SendMessageW(hwnd, dt::QueryVisible, dt::Chat, 0) == 0x10001 &&
                       SendMessageW(hwnd, dt::QueryVisible, dt::Sidebar, 0) == 0x10001, "both visible after each cycle");
                 Check(SendMessageW(hwnd, dt::Active, 0, 0) == 0, "cycle releases owned overrides");
+            }
+        }
+        for (unsigned selection : {static_cast<unsigned>(dt::Downloads), static_cast<unsigned>(dt::Bookmark),
+                                   dt::ExtensionParts, dt::ToolbarParts, dt::All}) {
+            for (unsigned cycle = 0; cycle < 3; ++cycle) {
+                Check(SendMessageW(hwnd, dt::Configure, selection, 0) == 0, "new tweak applies repeatedly");
+                for (auto const& item : dt::NativeTargets) if (selection & item.flag)
+                    Check(SendMessageW(hwnd, dt::Query, item.flag, 0) == 0x10001, "new target readback");
+                Check(fake->nodes.at(3).value == L"Visible", "window caption untouched");
+                Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "new tweaks restore");
+                Pump();
+                for (auto handle : {7ull, 8ull, 9ull, 10ull, 11ull})
+                    Check(fake->nodes.at(handle).value == L"Visible", "new target baseline restored");
+                Check(fake->nodes.at(12).value == L"Collapsed" && !fake->nodes.at(12).local,
+                      "originally hidden bookmarks bar stays hidden and unowned");
             }
         }
         Check(fake->staleValueWrites == 0, "no cached value handles reused across cycles");

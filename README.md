@@ -5,9 +5,11 @@ Small tweaks for [Dia](https://www.diabrowser.com) that stay in place when Dia u
 Unofficial and not affiliated with The Browser Company. Apple Silicon, macOS 14 or later.
 
 Experimental Windows x64 port: see [windows/README.md](windows/README.md).
-It implements a separate WinUI backend for hiding Chat and sidebar-toggle
-buttons, plus a Patches page in Dia's Windows Settings. These controls have been
-confirmed working on Windows. The remaining macOS tweaks are not ported.
+It implements a separate WinUI backend with a Patches page in Dia's Windows
+Settings. Chat/sidebar hiding, restoration and saved settings have been confirmed
+working on Windows. The latest build adds downloads, bookmark, extensions and
+experimental whole-toolbar hiding; those additions need on-device confirmation.
+The remaining macOS tweaks are not ported.
 
 ## Tweaks
 

@@ -146,7 +146,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         }
         if (msg == dt::State) return state.load();
         if (msg == dt::Flags) return flags;
-        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(lp)); return 0; }
+        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(lp & 0xff), static_cast<dt::Family>((lp >> 8) & 0xff)); return 0; }
         if (msg == dt::RemoveNode) {
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
@@ -160,9 +160,16 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (wp & ~dt::All) return -1;
             flags = static_cast<unsigned>(wp);
             int failures = 0;
-            for (auto& [node, button] : buttons) {
-                if (!button.active && button.detached) continue;
-                if (!Apply(node, button, (flags & button.target) != 0)) ++failures;
+            // Reveal parent hosts before restoring children; hide hosts only
+            // after child choices have been applied while their handles are live.
+            for (unsigned pass = 0; pass < 3; ++pass) {
+                for (auto& [node, button] : buttons) {
+                    bool host = (button.target & dt::ToolbarParts) != 0;
+                    bool enable = (flags & button.target) != 0;
+                    unsigned order = host ? (enable ? 2u : 0u) : 1u;
+                    if (pass != order || (!button.active && button.detached)) continue;
+                    if (!Apply(node, button, enable)) ++failures;
+                }
             }
             for (auto it = buttons.begin(); it != buttons.end();) {
                 if (it->second.detached && !it->second.active) it = buttons.erase(it);
@@ -189,9 +196,13 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         }
         if (msg == dt::Query || msg == dt::QueryVisible) {
             unsigned matched = 0, hidden = 0;
-            for (const auto& [node, button] : buttons) if (!button.detached && (button.target & wp)) {
+            for (const auto& [node, button] : buttons) if ((button.target & wp) &&
+                (!button.detached || (msg == dt::Query && button.active))) {
                 ++matched; // A matched selector stays counted even if Visibility is unreadable.
-                dt::Properties p(service, node);
+                InstanceHandle handle = node;
+                if (button.active && button.instance &&
+                    FAILED(diagnostics->RegisterInstance(button.instance.get(), &handle))) continue;
+                dt::Properties p(service, handle);
                 auto v = p.Find(L"Visibility");
                 if (!v) continue;
                 if (!v->MetadataBits && (msg == dt::Query ? dt::IsCollapsed(dt::Text(v->Value)) : dt::IsVisible(dt::Text(v->Value)))) ++hidden;
@@ -203,9 +214,11 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     HRESULT ChangeFromSettings(unsigned selection) {
         unsigned previous = flags;
         bool applied = Message(window, dt::Configure, selection, 0) == 0;
-        for (unsigned target : {dt::Chat, dt::Sidebar}) if (selection & target) {
+        for (auto const& item : dt::NativeTargets) if (selection & item.flag) {
+            unsigned target = item.flag;
             auto counts = static_cast<unsigned>(Message(window, dt::Query, target, 0));
-            applied = applied && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
+            applied = applied && ((item.optional && counts == 0) ||
+                ((counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff)));
         }
         HRESULT hr = applied ? preferences.Write(selection) : E_FAIL;
         if (FAILED(hr)) Message(window, dt::Configure, previous, 0);
@@ -217,7 +230,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (FAILED(hr)) { lastQueryError = hr; return {}; }
         return Adopt(instance);
     }
-    void Discover(InstanceHandle node, dt::Target namedTarget) {
+    void Discover(InstanceHandle node, dt::Target namedTarget, dt::Family family) {
         auto existing = buttons.find(node);
         if (existing != buttons.end()) {
             existing->second.detached = false;
@@ -251,11 +264,11 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (FAILED(p.result)) { ++failedQueries; lastQueryError = p.result; return; }
         auto id = p.Find(L"AutomationId");
         // An unset string can be reported as null. No arbitrary property values
-        // or x:Names are retained: the callback passes only our two known keys.
+        // or x:Names are retained: the callback passes only known target keys.
         if (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty()) ++missingIds;
         if (id && id->MetadataBits && id->MetadataBits != IsValueNull) return;
         Button button;
-        button.target = dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget);
+        button.target = dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget, family);
         if (button.target == dt::None) return;
         if (button.target == namedTarget && (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         auto [it, inserted] = buttons.emplace(node, button);
@@ -385,16 +398,20 @@ public:
         // Only queue handles. All property access and layout changes happen later on the UI thread.
         UINT msg = mutation == Remove ? dt::RemoveNode : dt::AddNode;
         dt::Target namedTarget = dt::None;
+        dt::Family family = dt::Family::Button;
         if (mutation == Add) {
             ++added;
             auto type = dt::Text(element.Type);
             if (type == L"Microsoft.UI.Xaml.Controls.NavigationView" || type == L"NavigationView")
                 return PostMessageW(window, dt::SettingsNode, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
-            if (!dt::IsButtonType(dt::Text(element.Type))) return S_OK;
+            if (dt::IsRepeaterType(type)) family = dt::Family::Repeater;
+            else if (dt::IsHostType(type)) family = dt::Family::Host;
+            else if (!dt::IsButtonType(type)) return S_OK;
+            namedTarget = dt::Identify(dt::Text(element.Name), family);
+            if (family == dt::Family::Host && namedTarget == dt::None) return S_OK;
             ++eligible;
-            namedTarget = dt::Identify(dt::Text(element.Name));
         }
-        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget | (static_cast<LPARAM>(family) << 8)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
     }
     ~Tap() {
         if (service) service->Release();
