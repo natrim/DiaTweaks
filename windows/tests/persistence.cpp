@@ -74,7 +74,7 @@ int main() {
         Check(SUCCEEDED(app.Write(dt::Chat)) && FAILED(app.Write(8)) && Read(app) == dt::Chat, "invalid mask cannot overwrite a valid saved value");
 
         HKEY appKey = nullptr;
-        Check(RegOpenKeyExW(registry.key, app.path, 0, KEY_SET_VALUE, &appKey) == ERROR_SUCCESS, "open test app key");
+        Check(RegOpenKeyExW(registry.key, app.path, 0, KEY_SET_VALUE | KEY_QUERY_VALUE, &appKey) == ERROR_SUCCESS, "open test app key");
         DWORD invalidMask = 8;
         Check(RegSetValueExW(appKey, L"WindowsFlags", 0, REG_DWORD, reinterpret_cast<BYTE*>(&invalidMask), sizeof(invalidMask)) == ERROR_SUCCESS, "seed unsupported mask");
         unsigned untouched = 777;
