@@ -3,8 +3,8 @@
 This is an initial native Windows implementation, **not a validated port of all
 DiaTweaks features**. Hiding, restoration and repeated hiding have been reported
 working on Windows, including the Settings UI. Saved settings across runs, toolbar hiding, downloads, bookmark and extensions
-have also been reported working. The new Recent Tabs and Spaces switches need
-on-device confirmation. Whole-toolbar hiding remains experimental.
+have also been reported working. Recent Tabs hiding has also been confirmed. Spaces and the new hover-reveal
+option need on-device confirmation. Whole-toolbar hiding remains experimental.
 The macOS installer and Rust CLI do not manage this backend.
 
 ## Implemented scope
@@ -12,6 +12,7 @@ The macOS installer and Rust CLI do not manage this backend.
 | Windows switch | Upstream tweak | Selector |
 | --- | --- | --- |
 | `--settings` (or no arguments) | Settings UI and saved selection | Dia Settings → Patches |
+| `--hide-toolbar --reveal-toolbar` | `revealToolbarOnHover` (experimental) | Pointer/focus policy on the hidden toolbar's own window and pane |
 | `--hide-chat` | `hideChatButton` | `ChatButton` |
 | `--hide-sidebar` | `hideSidebarButton` | `SidebarToggleButton` |
 | `--hide-downloads` | Windows addition | `DownloadsButton` |
@@ -37,9 +38,15 @@ Candidates whose header is not connected yet are retried for up to five seconds;
 availability refreshes when the header becomes recognizable.
 Horizontal-tab Recent Tabs is not implemented; its switch is unavailable when no
 matching sidebar header exists. Spaces uses the observed exact button ID.
-No claim is made about layout reflow or hover reveal.
+Hover reveal uses the top eight logical pixels of the content pane, keeps the
+bar open while the pointer or keyboard focus is in it, and hides after a 250 ms
+pointer-leave delay. Losing the active window hides it immediately. It restores
+only visibility values owned by DiaTweaks, so an already-hidden bookmarks bar
+stays hidden. Native layout may reflow while the bar is shown; floating overlay
+and animation parity with macOS are not implemented. Window/pane geometry, DPI,
+multiple panes and menus need testing in real Dia.
 
-Hover reveal, edge-to-edge content, corner shapes, horizontal-tab recent tabs,
+Edge-to-edge content, corner shapes, horizontal-tab recent tabs,
 Chats library button, tab grouping, active-window styling
 and automatic attachment after restart/update are not implemented. Dia's
 built-in updater is unchanged. WSL cannot run this backend.
@@ -80,7 +87,7 @@ Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
 
 Open Dia's Settings and choose **Patches** at the bottom of its sidebar.
 The page contains switches for the toolbar, Chat, sidebar, downloads, bookmark,
-extensions, Recent Tabs and Spaces, availability notes, and a **Restore defaults** action.
+extensions, Recent Tabs, Spaces and hover reveal, availability notes, and a **Restore defaults** action.
 Whole-toolbar hiding disables its child-control switches while preserving their saved
 choices. The Recent Tabs and Spaces sidebar switches remain usable. Showing the toolbar again reapplies those choices. Optional bookmarks
 controls may be absent; they are patched if they appear later.
@@ -104,7 +111,7 @@ to disconnect and attach the current build with those choices. `--restore` also 
 Closing or leaving Patches is read-only: unload-triggered/programmatic switch
 events do not save changes. Only active-page switch actions or explicit CLI
 changes write preferences. After an upgrade, the launcher prints the loaded
-choices for all eight switches to help verify restart behavior.
+choices for all nine switches to help verify restart behavior.
 
 ### Disconnect and update without restarting
 
@@ -153,7 +160,12 @@ The controller checks each requested control's effective Visibility after settin
 it. A missing selector, unsupported property source, binding, failed readback or
 attachment error returns non-zero. If a new selection fails, it attempts to
 restore the previous selection. Restart Dia if restoration fails or attachment
-times out. All changes are in memory; a restart also unloads the DLL.
+times out. Hover is a dependent option: enable **Hide toolbar** first in Settings, or combine
+`--hide-toolbar --reveal-toolbar` on the CLI. Disabling Hide toolbar preserves
+the hover preference as inactive. The timer stops when the option is inactive or
+the add-on detaches. No global input hook is installed.
+
+All changes are in memory; a restart also unloads the DLL.
 
 Restore prints each affected button's current visible count and remaining owned
 overrides. It waits briefly for visual-tree notifications and requires controls

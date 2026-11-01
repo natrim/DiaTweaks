@@ -26,4 +26,7 @@ $reference = Join-Path $env:WindowsSdkDir "UnionMetadata\$sdkVersion\Windows.win
 if (-not (Test-Path $compiler) -or -not (Test-Path $reference)) { throw 'Windows SDK C++/WinRT tools or metadata are missing.' }
 & $compiler -input $metadata -reference $reference -output $headers
 if ($LASTEXITCODE) { throw 'C++/WinRT header generation failed.' }
+$interop = Get-ChildItem $packages -Recurse -Filter Microsoft.UI.Interop.h | Where-Object { $_.Directory.Name -eq 'winrt' } | Select-Object -First 1
+if (-not $interop) { throw 'Windows App SDK window interop header is missing.' }
+Copy-Item -LiteralPath $interop.FullName -Destination (Join-Path $headers 'winrt/Microsoft.UI.Interop.h') -Force
 return $headers

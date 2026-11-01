@@ -209,6 +209,10 @@ int wmain(int argc, wchar_t** argv) {
             } else throw std::runtime_error("Unknown or incomplete argument. Run with --help.");
         }
         if ((unload && (settingsUi || reload || flags || restore)) || (!unload && ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))))) { Help(); return 2; }
+        if (!settingsUi && (flags & dt::RevealToolbar) && !(flags & dt::Toolbar)) {
+            std::wcerr << L"--reveal-toolbar requires --hide-toolbar.\n";
+            return 2;
+        }
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
         if (!pid) {
@@ -302,7 +306,7 @@ int wmain(int argc, wchar_t** argv) {
             auto counts = static_cast<unsigned>(Send(window, restore ? dt::QueryVisible : dt::Query, target));
             unsigned matched = counts & 0xffff, hidden = counts >> 16;
             std::wcout << item.id
-                       << L": " << hidden << L"/" << matched << (restore ? L" visible" : L" collapsed")
+                       << L": " << hidden << L"/" << matched << (restore ? L" visible" : ((flags & dt::RevealToolbar) && (target & dt::ToolbarParts) ? L" hidden or hover-revealed" : L" collapsed"))
                        << L", owned overrides=" << Send(window, dt::Active, target) << L'\n';
             if (!restore || (restoring & target))
                 ok = ok && ((!restore && item.optional && matched == 0) || (matched != 0 && hidden == matched));

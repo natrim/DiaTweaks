@@ -222,10 +222,11 @@ struct Settings : std::enable_shared_from_this<Settings> {
                 row.toggle.IsOn((flags & row.mask) != 0);
                 bool toolbarHidden = dt::HiddenWithToolbar(row.mask, flags);
                 bool ready = api.available(api.context, row.required);
-                row.toggle.IsEnabled(ready && !toolbarHidden);
-                row.note.Text(toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
+                bool needsToolbar = row.mask == dt::RevealToolbar && !(flags & dt::Toolbar);
+                row.toggle.IsEnabled(ready && !toolbarHidden && !needsToolbar);
+                row.note.Text(needsToolbar ? L"Requires Hide toolbar. Your preference is preserved." : toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
                                             : L"Not available in the current browser window.");
-                row.note.Visibility(ready && !toolbarHidden ? Visibility::Collapsed : Visibility::Visible);
+                row.note.Visibility(ready && !toolbarHidden && !needsToolbar ? Visibility::Collapsed : Visibility::Visible);
             }
         } catch (...) { lastError = to_hresult(); }
         syncing = false;

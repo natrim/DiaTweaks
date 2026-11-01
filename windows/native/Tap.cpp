@@ -11,11 +11,15 @@
 #include "Protocol.h"
 #include "SettingsHost.h"
 #include "Preferences.h"
+#include "HoverHost.h"
 
 namespace {
 HINSTANCE module;
 struct Button {
     dt::Target target = dt::None;
+    std::shared_ptr<void> hoverRegion;
+    dt::HoverState hover;
+    bool hoverRestored = false;
     unsigned property = 0;
     // Keep semantic baseline values, never cache a temporary boxed enum handle
     // across property writes: diagnostics may evict that value after restore.
@@ -53,9 +57,44 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     HRESULT lastQueryError = S_OK;
     struct PendingScope { dt::Target named; unsigned attempts = 0; };
     std::map<InstanceHandle, PendingScope> pendingRecent;
-    static constexpr UINT_PTR ScopeTimer = 0x4454;
+    static constexpr UINT_PTR ScopeTimer = 0x4454, HoverTimer = 0x4455;
+    unsigned hoverAttempts = 0;
     std::map<InstanceHandle, Button> buttons; // Accessed only on SetSite's UI thread.
 
+    bool HoverEnabled() const { return (flags & dt::Toolbar) && (flags & dt::RevealToolbar); }
+    bool ShouldHide(Button const& button) const {
+        return (flags & button.target) != 0 && !(HoverEnabled() && (button.target & dt::ToolbarParts) && button.hover.revealed);
+    }
+    bool EnsureHoverRegions() {
+        bool available = false;
+        for (auto& [node, button] : buttons) if (button.target & dt::ToolbarParts) {
+            if (!button.hoverRegion) {
+                auto object = button.instance ? button.instance : Instance(node);
+                if (object) button.hoverRegion = dt::TrackToolbar(object.get());
+            }
+            if (button.target == dt::Toolbar && button.hoverRegion) available = true;
+        }
+        return available;
+    }
+    void UpdateHover() {
+        bool ready = EnsureHoverRegions();
+        if (hoverAttempts) --hoverAttempts;
+        if (!HoverEnabled()) {
+            if (ready || !hoverAttempts) KillTimer(window, HoverTimer);
+            if (ready) dt::RefreshSettings();
+            return;
+        }
+        ULONGLONG now = GetTickCount64();
+        for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && button.hoverRegion) {
+            auto previous = button.hover;
+            auto sample = dt::ReadToolbarHover(button.hoverRegion, button.hover.revealed);
+            bool reveal = button.hover.Update(sample, now);
+            if (reveal == previous.revealed) continue;
+            bool owned = button.active;
+            if (Apply(node, button, (flags & button.target) && !reveal)) button.hoverRestored = reveal && owned;
+            else button.hover = previous;
+        }
+    }
     static DWORD WINAPI Subscribe(void* context) noexcept {
         auto self = static_cast<Tap*>(context);
         HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -84,6 +123,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         }
         stopping = true;
         KillTimer(window, ScopeTimer);
+        KillTimer(window, HoverTimer);
         pendingRecent.clear();
         state = 2;
         AddRef();
@@ -111,6 +151,10 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+        if (msg == WM_TIMER && wp == HoverTimer) {
+            if (!stopping) UpdateHover();
+            return 0;
+        }
         if (msg == WM_TIMER && wp == ScopeTimer) {
             if (stopping) return 0;
             auto candidates = pendingRecent;
@@ -150,6 +194,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 [](void* context) { return static_cast<Tap*>(context)->flags; },
                 [](void* context, unsigned target) {
                     auto self = static_cast<Tap*>(context);
+                    if (target == dt::RevealToolbar) return self->EnsureHoverRegions();
                     return (self->Message(self->window, dt::Query, target, 0) & 0xffff) != 0 || self->Message(self->window, dt::Active, target, 0) != 0;
                 },
                 [](void* context, unsigned selection) {
@@ -222,13 +267,22 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::Configure) {
             if (wp & ~dt::All) return -1;
             flags = static_cast<unsigned>(wp);
+            if (HoverEnabled()) {
+                if (!EnsureHoverRegions() || !SetTimer(window, HoverTimer, 80, nullptr)) return -1;
+            } else {
+                KillTimer(window, HoverTimer);
+                for (auto& [node, button] : buttons) {
+                    (void)node;
+                    button.hover.Reset(); button.hoverRestored = false;
+                }
+            }
             int failures = 0;
             // Reveal parent hosts before restoring children; hide hosts only
             // after child choices have been applied while their handles are live.
             for (unsigned pass = 0; pass < 3; ++pass) {
                 for (auto& [node, button] : buttons) {
                     bool host = (button.target & dt::ToolbarParts) != 0;
-                    bool enable = (flags & button.target) != 0;
+                    bool enable = ShouldHide(button);
                     unsigned order = host ? (enable ? 2u : 0u) : 1u;
                     if (pass != order || (!button.active && button.detached)) continue;
                     if (!Apply(node, button, enable)) ++failures;
@@ -268,7 +322,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 dt::Properties p(service, handle);
                 auto v = p.Find(L"Visibility");
                 if (!v) continue;
-                if (!v->MetadataBits && (msg == dt::Query ? dt::IsCollapsed(dt::Text(v->Value)) : dt::IsVisible(dt::Text(v->Value)))) ++hidden;
+                bool hoverVisible = msg == dt::Query && HoverEnabled() && button.hover.revealed &&
+                    button.hoverRestored && dt::IsVisible(dt::Text(v->Value));
+                if (!v->MetadataBits && (hoverVisible || (msg == dt::Query ? dt::IsCollapsed(dt::Text(v->Value)) : dt::IsVisible(dt::Text(v->Value))))) ++hidden;
             }
             return static_cast<LRESULT>((hidden << 16) | matched);
         }
@@ -316,7 +372,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         auto existing = buttons.find(node);
         if (existing != buttons.end()) {
             existing->second.detached = false;
-            Apply(node, existing->second, (flags & existing->second.target) != 0);
+            Apply(node, existing->second, ShouldHide(existing->second));
             return;
         }
         if (buttons.size() >= 4096) return;
@@ -336,7 +392,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                     buttons.erase(it);
                     saved.detached = false;
                     auto moved = buttons.emplace(node, std::move(saved)).first;
-                    Apply(node, moved->second, (flags & moved->second.target) != 0);
+                    Apply(node, moved->second, ShouldHide(moved->second));
                     return;
                 }
             }
@@ -365,6 +421,11 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             pendingRecent.erase(node);
         }
         if (button.target == namedTarget && (family == dt::Family::Host || !id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
+        if (button.target & dt::ToolbarParts) {
+            auto object = Instance(node);
+            if (object) button.hoverRegion = dt::TrackToolbar(object.get());
+            if (!button.hoverRegion) { hoverAttempts = 50; SetTimer(window, HoverTimer, 80, nullptr); }
+        }
         auto [it, inserted] = buttons.emplace(node, button);
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
         if (inserted) dt::RefreshSettings();

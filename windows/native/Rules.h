@@ -5,7 +5,7 @@ namespace dt {
 // Keep existing preference bits stable across upgrades.
 enum Target : unsigned {
     None = 0, Chat = 1, Sidebar = 2, Downloads = 4, Bookmark = 8,
-    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128, RecentTabs = 256, Spaces = 512
+    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128, RecentTabs = 256, Spaces = 512, RevealToolbar = 1024
 };
 enum class Family : unsigned { Button, Repeater, Host };
 struct NativeTarget { Target flag; const wchar_t* id; Family family; bool optional; };
@@ -24,7 +24,7 @@ inline constexpr NativeTarget NativeTargets[] = {
 // The host contains both the repeater and its overflow; do not patch those children.
 inline constexpr unsigned ExtensionParts = Extensions | ExtensionsOverflow;
 inline constexpr unsigned ToolbarParts = Toolbar | BookmarksBar;
-inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts | RecentTabs | Spaces;
+inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts | RecentTabs | Spaces | RevealToolbar;
 inline constexpr unsigned UnsupportedFlag = 1u << 30;
 struct Tweak {
     unsigned mask, required;
@@ -36,6 +36,8 @@ struct Tweak {
 inline constexpr Tweak Tweaks[] = {
     {ToolbarParts, Toolbar, L"HideToolbar", L"--hide-toolbar", L"Hide toolbar",
      L"Hide the address and navigation toolbar and bookmarks bar. Experimental."},
+    {RevealToolbar, RevealToolbar, L"RevealToolbar", L"--reveal-toolbar", L"Reveal toolbar on hover",
+     L"Show the hidden toolbar at the top of the page. Requires Hide toolbar. Experimental."},
     {Chat, Chat, L"HideChat", L"--hide-chat", L"Hide Chat button", L"Remove the Chat button from the toolbar."},
     {Sidebar, Sidebar, L"HideSidebar", L"--hide-sidebar", L"Hide sidebar button", L"Remove the button that opens and closes the sidebar."},
     {Downloads, Downloads, L"HideDownloads", L"--hide-downloads", L"Hide downloads button", L"Remove the downloads button from the toolbar."},

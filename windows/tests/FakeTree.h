@@ -20,6 +20,7 @@ public:
     InstanceHandle canonical;
     FakeElement* parent = nullptr;
     bool headerPeers = false;
+    dt::HoverSample hoverSample{true};
     const wchar_t* name = L"";
     explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -218,6 +219,12 @@ public:
         }
         *out = element; (*out)->AddRef(); return S_OK;
     }
+    void Hover(InstanceHandle canonical, dt::HoverSample sample) {
+        IInspectable* object = nullptr;
+        Check(SUCCEEDED(GetIInspectableFromHandle(canonical, &object)), "hover object");
+        static_cast<FakeElement*>(object)->hoverSample = sample;
+        object->Release();
+    }
     HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(IInspectable*, InstanceHandle*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE HitTest(RECT, unsigned*, InstanceHandle**) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE RegisterInstance(IInspectable* instance, InstanceHandle* out) override {
@@ -238,4 +245,12 @@ inline bool dt::IsSidebarHeader(IInspectable* object) noexcept {
         [](FakeElement* item) { return item->parent; },
         [](FakeElement* item) { return item->name; },
         [](FakeElement* item) { return item->headerPeers; });
+}
+
+inline std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
+    object->AddRef();
+    return std::shared_ptr<void>(static_cast<FakeElement*>(object), [](void* value) { static_cast<FakeElement*>(value)->Release(); });
+}
+inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region, bool) noexcept {
+    return region ? static_cast<FakeElement*>(region.get())->hoverSample : HoverSample{};
 }

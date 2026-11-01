@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include "../native/Rules.h"
 #include "../native/Scope.h"
+#include "../native/Hover.h"
 
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 int main() {
@@ -55,6 +56,18 @@ int main() {
     Check(dt::HiddenWithToolbar(dt::Chat, dt::Toolbar) &&
           !dt::HiddenWithToolbar(dt::RecentTabs, dt::Toolbar) &&
           !dt::HiddenWithToolbar(dt::Spaces, dt::Toolbar), "toolbar dependency excludes sidebar features");
+    dt::HoverState hover;
+    Check(!hover.Update({true, true, false, true}, 1), "stale focus cannot reveal an initially hidden toolbar");
+    Check(hover.Update({true, true, true, false}, 10), "pointer reveals toolbar");
+    Check(hover.Update({true, true, false, true}, 20), "toolbar focus holds reveal");
+    Check(hover.Update({true, true, false, false}, 30) && hover.Update({true, true, false, false}, 279), "hide delay prevents edge flicker");
+    Check(!hover.Update({true, true, false, false}, 280), "hide after delay");
+    Check(hover.Update({true, true, true, false}, 300) && !hover.Update({true, false, true, true}, 301), "inactive window resets reveal");
+    Check(dt::InHoverBand(12, 27, 10, 20, 100, 500, 56, false) &&
+          !dt::InHoverBand(12, 28, 10, 20, 100, 500, 56, false), "eight-DIP hidden trigger");
+    Check(dt::InHoverBand(12, 83, 10, 20, 100, 500, 56, true) &&
+          !dt::InHoverBand(12, 84, 10, 20, 100, 500, 56, true), "revealed toolbar plus bottom margin");
+    Check(!dt::InHoverBand(9, 22, 10, 20, 100, 500, 56, false), "other pane excluded");
     unsigned covered = 0;
     for (auto const& tweak : dt::Tweaks) {
         Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");
