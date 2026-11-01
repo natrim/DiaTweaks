@@ -64,6 +64,7 @@ void Diagnostics(HWND hwnd) {
                << L", xNameMatches=" << Send(hwnd, dt::Stats, dt::NamedMatches)
                << L", tracked=" << Send(hwnd, dt::Stats, dt::Tracked)
                << L", missingVisibility=" << Send(hwnd, dt::Stats, dt::MissingVisibility)
+               << L", detachedOverrides=" << Send(hwnd, dt::Stats, dt::DetachedOverrides)
                << L", lastQueryError=0x" << std::hex
                << static_cast<unsigned long>(Send(hwnd, dt::Stats, dt::LastQueryError)) << std::dec << L'\n';
 }
@@ -195,14 +196,31 @@ int wmain(int argc, wchar_t** argv) {
             } while (GetTickCount64() < deadline);
         }
         unsigned previous = static_cast<unsigned>(Send(window, dt::Flags));
+        unsigned restoring = restore ? static_cast<unsigned>(Send(window, dt::OwnedMask)) : 0;
         bool ok = Send(window, dt::Configure, flags) == 0;
-        if (restore) ok = ok && Send(window, dt::Active) == 0;
-        for (unsigned target : {dt::Chat, dt::Sidebar}) if (flags & target) {
-            auto counts = static_cast<unsigned>(Send(window, dt::Query, target));
+        if (restore) {
+            // Visibility restoration can post a visual-tree Add notification.
+            // Give the UI thread time to publish it before checking live controls.
+            ULONGLONG deadline = GetTickCount64() + 2000;
+            do {
+                bool verified = Send(window, dt::Active) == 0;
+                for (unsigned target : {dt::Chat, dt::Sidebar}) if (restoring & target) {
+                    auto counts = static_cast<unsigned>(Send(window, dt::QueryVisible, target));
+                    verified = verified && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
+                }
+                if (verified) break;
+                Sleep(50);
+            } while (GetTickCount64() < deadline);
+            ok = ok && Send(window, dt::Active) == 0;
+        }
+        unsigned reporting = restore ? (restoring | previous) : flags;
+        for (unsigned target : {dt::Chat, dt::Sidebar}) if (reporting & target) {
+            auto counts = static_cast<unsigned>(Send(window, restore ? dt::QueryVisible : dt::Query, target));
             unsigned matched = counts & 0xffff, hidden = counts >> 16;
             std::wcout << (target == dt::Chat ? L"ChatButton" : L"SidebarToggleButton")
-                       << L": " << hidden << L"/" << matched << L" collapsed\n";
-            ok = ok && matched != 0 && hidden == matched;
+                       << L": " << hidden << L"/" << matched << (restore ? L" visible" : L" collapsed")
+                       << L", owned overrides=" << Send(window, dt::Active, target) << L'\n';
+            if (!restore || (restoring & target)) ok = ok && matched != 0 && hidden == matched;
         }
         if (!ok) {
             // Restore the previous selection if a new selection was only partly applied.
@@ -212,7 +230,8 @@ int wmain(int argc, wchar_t** argv) {
             Diagnostics(window);
             return 1;
         }
-        std::wcout << (restore ? L"DiaTweaks overrides restored.\n" : L"Requested button visibility verified through XAML diagnostics.\n");
+        std::wcout << (restore ? (restoring ? L"Owned overrides removed and restored button visibility verified.\n" : L"No owned visibility overrides remain.\n")
+                              : L"Requested button visibility verified through XAML diagnostics.\n");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "DiaTweaks: " << error.what() << '\n';

@@ -5,6 +5,7 @@
 #include <xamlom.h>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <new>
 #include "Properties.h"
 #include "Protocol.h"
@@ -15,8 +16,18 @@ struct Button {
     dt::Target target = dt::None;
     unsigned property = 0;
     InstanceHandle original = 0, collapsed = 0;
-    bool local = false, active = false;
+    bool local = false, active = false, detached = false;
+    std::shared_ptr<IInspectable> instance;
+    std::shared_ptr<IUnknown> identity;
 };
+template<class T> std::shared_ptr<T> Adopt(T* value) {
+    return std::shared_ptr<T>(value, [](T* p) { if (p) p->Release(); });
+}
+std::shared_ptr<IUnknown> Identity(IInspectable* value) {
+    IUnknown* identity = nullptr;
+    if (!value || FAILED(value->QueryInterface(__uuidof(IUnknown), reinterpret_cast<void**>(&identity)))) return {};
+    return Adopt(identity);
+}
 
 class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::atomic<ULONG> refs{1};
@@ -24,6 +35,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::atomic<unsigned> added{0}, eligible{0};
     IUnknown* site = nullptr;
     IVisualTreeService* service = nullptr;
+    IXamlDiagnostics* diagnostics = nullptr;
     HWND window = nullptr;
     unsigned flags = 0;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
@@ -63,6 +75,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             case dt::NamedMatches: return namedMatches;
             case dt::Tracked: return static_cast<LRESULT>(buttons.size());
             case dt::LastQueryError: return lastQueryError;
+            case dt::DetachedOverrides: {
+                unsigned count = 0;
+                for (const auto& [node, button] : buttons) {
+                    (void)node;
+                    if (button.active && button.detached) ++count;
+                }
+                return count;
+            }
             case dt::MissingVisibility: {
                 unsigned missing = 0;
                 for (const auto& [node, button] : buttons) {
@@ -78,36 +98,93 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::State) return state.load();
         if (msg == dt::Flags) return flags;
         if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(lp)); return 0; }
-        if (msg == dt::RemoveNode) { buttons.erase(static_cast<InstanceHandle>(wp)); return 0; }
+        if (msg == dt::RemoveNode) {
+            auto it = buttons.find(static_cast<InstanceHandle>(wp));
+            if (it != buttons.end()) {
+                // Removal from the visual tree is not proof of object destruction.
+                if (it->second.active) it->second.detached = true;
+                else buttons.erase(it);
+            }
+            return 0;
+        }
         if (msg == dt::Configure) {
             if (wp & ~dt::All) return -1;
             flags = static_cast<unsigned>(wp);
             int failures = 0;
             for (auto& [node, button] : buttons) {
+                if (!button.active && button.detached) continue;
                 if (!Apply(node, button, (flags & button.target) != 0)) ++failures;
+            }
+            for (auto it = buttons.begin(); it != buttons.end();) {
+                if (it->second.detached && !it->second.active) it = buttons.erase(it);
+                else ++it;
             }
             return failures ? -1 : 0;
         }
         if (msg == dt::Active) {
             unsigned count = 0;
-            for (const auto& [node, button] : buttons) if (button.active) ++count;
+            for (const auto& [node, button] : buttons) {
+                (void)node;
+                if (button.active && (!wp || (button.target & wp))) ++count;
+            }
             return count;
         }
-        if (msg == dt::Query) {
+        if (msg == dt::OwnedMask) {
+            unsigned mask = 0;
+            for (const auto& [node, button] : buttons) {
+                (void)node;
+                if (button.active) mask |= button.target;
+            }
+            return mask;
+        }
+        if (msg == dt::Query || msg == dt::QueryVisible) {
             unsigned matched = 0, hidden = 0;
-            for (const auto& [node, button] : buttons) if (button.target & wp) {
+            for (const auto& [node, button] : buttons) if (!button.detached && (button.target & wp)) {
                 ++matched; // A matched selector stays counted even if Visibility is unreadable.
                 dt::Properties p(service, node);
                 auto v = p.Find(L"Visibility");
                 if (!v) continue;
-                if (!v->MetadataBits && dt::IsCollapsed(dt::Text(v->Value))) ++hidden;
+                if (!v->MetadataBits && (msg == dt::Query ? dt::IsCollapsed(dt::Text(v->Value)) : dt::IsVisible(dt::Text(v->Value)))) ++hidden;
             }
             return static_cast<LRESULT>((hidden << 16) | matched);
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
+    std::shared_ptr<IInspectable> Instance(InstanceHandle node) {
+        IInspectable* instance = nullptr;
+        HRESULT hr = diagnostics->GetIInspectableFromHandle(node, &instance);
+        if (FAILED(hr)) { lastQueryError = hr; return {}; }
+        return Adopt(instance);
+    }
     void Discover(InstanceHandle node, dt::Target namedTarget) {
-        if (buttons.count(node) || buttons.size() >= 4096) return;
+        auto existing = buttons.find(node);
+        if (existing != buttons.end()) {
+            existing->second.detached = false;
+            Apply(node, existing->second, (flags & existing->second.target) != 0);
+            return;
+        }
+        if (buttons.size() >= 4096) return;
+        // The same object can reappear under a fresh diagnostics handle. Move
+        // its saved baseline rather than mistaking our Collapsed value for Dia's.
+        bool pending = false;
+        for (const auto& [handle, button] : buttons) {
+            (void)handle;
+            if (button.active && button.detached) { pending = true; break; }
+        }
+        if (pending) {
+            auto instance = Instance(node);
+            auto identity = Identity(instance.get());
+            for (auto it = buttons.begin(); identity && it != buttons.end(); ++it) {
+                if (it->second.active && it->second.detached && it->second.identity.get() == identity.get()) {
+                    Button saved = std::move(it->second);
+                    buttons.erase(it);
+                    saved.detached = false;
+                    auto moved = buttons.emplace(node, std::move(saved)).first;
+                    Apply(node, moved->second, (flags & moved->second.target) != 0);
+                    return;
+                }
+            }
+        }
         ++inspected;
         dt::Properties p(service, node);
         if (FAILED(p.result)) { ++failedQueries; lastQueryError = p.result; return; }
@@ -124,22 +201,31 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
     }
     bool Apply(InstanceHandle node, Button& button, bool enable) {
+        if (!enable && !button.active) return true;
+        // A removed visual's old handle can already be invalid. Keep the actual
+        // object alive and register it again before attempting restoration.
+        if (button.active && button.instance) {
+            HRESULT hr = diagnostics->RegisterInstance(button.instance.get(), &node);
+            if (FAILED(hr)) { lastQueryError = hr; return false; }
+        }
         dt::Properties p(service, node);
         auto v = p.Find(L"Visibility");
         if (!v || dt::Text(v->Type) != L"Microsoft.UI.Xaml.Visibility") return false;
         if (!enable) {
-            if (!button.active) return true;
             // If Dia has since changed the value itself, do not overwrite its change.
             if (v->MetadataBits || p.HasBinding(v->Index) || !dt::IsCollapsed(dt::Text(v->Value))) {
                 button.active = false;
+                button.identity.reset(); button.instance.reset();
                 return true;
             }
+            button.property = v->Index;
             HRESULT hr = Restore(node, button);
             if (FAILED(hr)) return false;
             dt::Properties restored(service, node);
             auto original = restored.Find(L"Visibility");
             if (!original || original->MetadataBits || !dt::IsVisible(dt::Text(original->Value))) return false;
             button.active = false;
+            button.identity.reset(); button.instance.reset();
             return true;
         }
         if (!v->MetadataBits && dt::IsCollapsed(dt::Text(v->Value))) return true;
@@ -149,6 +235,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         bool simple = source == BaseValueSourceLocal || source == BaseValueSourceDefault ||
                       source == BaseValueSourceBuiltInStyle || source == BaseValueSourceStyle;
         if (!dt::CanOverride(v->MetadataBits == 0, simple, p.HasBinding(v->Index), dt::Text(v->Value))) return false;
+        if (!button.instance) button.instance = Instance(node);
+        if (!button.identity) button.identity = Identity(button.instance.get());
+        if (!button.instance || !button.identity) return false;
         button.property = v->Index;
         button.local = source == BaseValueSourceLocal;
         std::wstring type(dt::Text(v->Type));
@@ -187,6 +276,8 @@ public:
         if (site) return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
         HRESULT hr = value->QueryInterface(__uuidof(IVisualTreeService), reinterpret_cast<void**>(&service));
         if (FAILED(hr)) return hr;
+        hr = value->QueryInterface(__uuidof(IXamlDiagnostics), reinterpret_cast<void**>(&diagnostics));
+        if (FAILED(hr)) { service->Release(); service = nullptr; return hr; }
         site = value; site->AddRef();
         // The diagnostics runtime can retain our COM vtable for the process lifetime.
         HMODULE pinned;
@@ -223,6 +314,7 @@ public:
     }
     ~Tap() {
         if (service) service->Release();
+        if (diagnostics) diagnostics->Release();
         if (site) site->Release();
     }
 };

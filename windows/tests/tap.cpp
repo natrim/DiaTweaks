@@ -3,13 +3,62 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <set>
 
 namespace {
 void Check(bool condition, const char* text) { if (!condition) throw std::runtime_error(text); }
-class FakeTree final : public IVisualTreeService {
+void Pump() {
+    MSG msg{};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+}
+class FakeElement final : public IInspectable {
+    std::atomic<ULONG> refs{1};
+public:
+    InstanceHandle canonical;
+    explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid != __uuidof(IUnknown) && iid != __uuidof(IInspectable)) return E_NOINTERFACE;
+        *out = static_cast<IInspectable*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+    ULONG STDMETHODCALLTYPE Release() override { ULONG n = --refs; if (!n) delete this; return n; }
+    HRESULT STDMETHODCALLTYPE GetIids(ULONG*, IID**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetRuntimeClassName(HSTRING*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetTrustLevel(TrustLevel*) override { return E_NOTIMPL; }
+};
+class FakeTree final : public IVisualTreeService, public IXamlDiagnostics {
     std::atomic<ULONG> refs{1};
     DWORD uiThread = GetCurrentThreadId();
     std::vector<std::wstring> created{L""};
+    IVisualTreeServiceCallback* callback = nullptr;
+    std::map<InstanceHandle, std::shared_ptr<FakeElement>> elements;
+    std::map<InstanceHandle, InstanceHandle> aliases, current;
+    std::set<InstanceHandle> invalid, detached;
+    InstanceHandle nextHandle = 100;
+    InstanceHandle Resolve(InstanceHandle handle) {
+        if (invalid.count(handle)) return 0;
+        return aliases.count(handle) ? aliases.at(handle) : handle;
+    }
+    HRESULT Notify(InstanceHandle handle, VisualMutationType mutation) {
+        auto canonical = aliases.count(handle) ? aliases.at(handle) : handle;
+        const auto& node = nodes.at(canonical);
+        VisualElement element{};
+        element.Handle = handle;
+        element.Type = SysAllocString(node.type);
+        element.Name = SysAllocString(node.name);
+        ParentChildRelation relation{};
+        HRESULT hr = callback->OnVisualTreeChange(relation, element, mutation);
+        SysFreeString(element.Type); SysFreeString(element.Name);
+        return hr;
+    }
+    void ReinsertIfVisible(InstanceHandle canonical) {
+        if (nodes.at(canonical).value == L"Visible" && detached.erase(canonical)) {
+            InstanceHandle handle = current.count(canonical) ? current.at(canonical) : canonical;
+            Check(SUCCEEDED(Notify(handle, Add)), "publish reinserted visual");
+        }
+    }
 public:
     struct Node {
         const wchar_t* id; std::wstring value; bool local; bool binding;
@@ -27,24 +76,33 @@ public:
     };
     unsigned clears = 0, writes = 0;
     bool ignoreWrites = false;
+    bool failRegister = false;
+    void Drop(InstanceHandle canonical) {
+        InstanceHandle handle = current.count(canonical) ? current.at(canonical) : canonical;
+        invalid.insert(handle); detached.insert(canonical);
+        Check(SUCCEEDED(Notify(handle, Remove)), "publish removal");
+    }
+    void ReAdd(InstanceHandle canonical) {
+        InstanceHandle handle = 0;
+        Check(SUCCEEDED(RegisterInstance(elements.at(canonical).get(), &handle)), "new handle for same object");
+        detached.erase(canonical);
+        Check(SUCCEEDED(Notify(handle, Add)), "publish new handle");
+    }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
         *out = nullptr;
-        if (iid != __uuidof(IUnknown) && iid != __uuidof(IVisualTreeService)) return E_NOINTERFACE;
-        *out = static_cast<IVisualTreeService*>(this); AddRef(); return S_OK;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IVisualTreeService)) *out = static_cast<IVisualTreeService*>(this);
+        else if (iid == __uuidof(IXamlDiagnostics)) *out = static_cast<IXamlDiagnostics*>(this);
+        else return E_NOINTERFACE;
+        AddRef(); return S_OK;
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
     ULONG STDMETHODCALLTYPE Release() override { ULONG n = --refs; if (!n) delete this; return n; }
-    HRESULT STDMETHODCALLTYPE AdviseVisualTreeChange(IVisualTreeServiceCallback* callback) override {
+    HRESULT STDMETHODCALLTYPE AdviseVisualTreeChange(IVisualTreeServiceCallback* value) override {
+        callback = value;
         for (const auto& [handle, node] : nodes) {
-            VisualElement element{};
-            element.Handle = handle;
-            element.Type = SysAllocString(node.type);
-            element.Name = SysAllocString(node.name);
-            ParentChildRelation relation{};
-            HRESULT hr = callback->OnVisualTreeChange(relation, element, Add);
-            SysFreeString(element.Type);
-            SysFreeString(element.Name);
+            (void)node;
+            HRESULT hr = Notify(handle, Add);
             if (FAILED(hr)) return hr;
         }
         return S_OK;
@@ -60,7 +118,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetPropertyValuesChain(InstanceHandle handle, unsigned* sourceCount,
         PropertyChainSource** sources, unsigned* count, PropertyChainValue** values) override {
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
-        auto node = nodes.find(handle);
+        auto node = nodes.find(Resolve(handle));
         if (node == nodes.end()) return E_INVALIDARG;
         *sourceCount = 1; *count = node->second.omitVisibility ? 1u : 2u;
         *sources = static_cast<PropertyChainSource*>(CoTaskMemAlloc(sizeof(PropertyChainSource)));
@@ -82,14 +140,20 @@ public:
     }
     HRESULT STDMETHODCALLTYPE SetProperty(InstanceHandle handle, InstanceHandle value, unsigned index) override {
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
-        if (index != 11 || !nodes.count(handle) || value >= created.size()) return E_INVALIDARG;
-        if (!ignoreWrites) { nodes.at(handle).value = created[static_cast<size_t>(value)]; nodes.at(handle).local = true; ++writes; }
+        auto canonical = Resolve(handle);
+        if (index != 11 || !nodes.count(canonical) || value >= created.size()) return E_INVALIDARG;
+        if (!ignoreWrites) {
+            nodes.at(canonical).value = created[static_cast<size_t>(value)]; nodes.at(canonical).local = true; ++writes;
+            ReinsertIfVisible(canonical);
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE ClearProperty(InstanceHandle handle, unsigned index) override {
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
-        if (index != 11 || !nodes.count(handle)) return E_INVALIDARG;
-        nodes.at(handle).value = L"Visible"; nodes.at(handle).local = false; ++clears;
+        auto canonical = Resolve(handle);
+        if (index != 11 || !nodes.count(canonical)) return E_INVALIDARG;
+        nodes.at(canonical).value = L"Visible"; nodes.at(canonical).local = false; ++clears;
+        ReinsertIfVisible(canonical);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetCollectionCount(InstanceHandle, unsigned*) override { return E_NOTIMPL; }
@@ -97,6 +161,27 @@ public:
     HRESULT STDMETHODCALLTYPE AddChild(InstanceHandle, InstanceHandle, unsigned) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE RemoveChild(InstanceHandle, unsigned) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE ClearChildren(InstanceHandle) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetDispatcher(IInspectable**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetUiLayer(IInspectable**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetApplication(IInspectable**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetIInspectableFromHandle(InstanceHandle handle, IInspectable** out) override {
+        if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
+        auto canonical = Resolve(handle);
+        if (!nodes.count(canonical)) return E_INVALIDARG;
+        if (!elements.count(canonical)) elements.emplace(canonical, Adopt(new FakeElement(canonical)));
+        *out = elements.at(canonical).get(); (*out)->AddRef(); return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(IInspectable*, InstanceHandle*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE HitTest(RECT, unsigned*, InstanceHandle**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE RegisterInstance(IInspectable* instance, InstanceHandle* out) override {
+        if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
+        if (failRegister) return E_FAIL;
+        auto canonical = static_cast<FakeElement*>(instance)->canonical;
+        InstanceHandle handle = current.count(canonical) ? current.at(canonical) : canonical;
+        if (invalid.count(handle)) { handle = ++nextHandle; aliases[handle] = canonical; }
+        current[canonical] = handle; *out = handle; return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetInitializationData(BSTR*) override { return E_NOTIMPL; }
 };
 }
 
@@ -106,7 +191,7 @@ int main() {
         module = GetModuleHandleW(nullptr);
         auto fake = new FakeTree;
         auto tap = new Tap;
-        Check(SUCCEEDED(tap->SetSite(fake)), "attach mock");
+        Check(SUCCEEDED(tap->SetSite(static_cast<IVisualTreeService*>(fake))), "attach mock");
         HWND hwnd = FindWindowExW(HWND_MESSAGE, nullptr, dt::WindowClass, nullptr);
         Check(hwnd != nullptr, "UI dispatcher window");
         ULONGLONG deadline = GetTickCount64() + 5000;
@@ -128,9 +213,34 @@ int main() {
             Check(fake->nodes.at(handle).value == L"Visible", "explicit ID precedence and label/type exclusions");
         unsigned writes = fake->writes;
         Check(SendMessageW(hwnd, dt::Configure, dt::All, 0) == 0 && fake->writes == writes, "idempotent apply");
+        fake->Drop(1);
+        Pump();
+        Check(SendMessageW(hwnd, dt::Active, 0, 0) == 2, "removed visual retains its owned override");
+        Check(SendMessageW(hwnd, dt::Stats, dt::DetachedOverrides, 0) == 1, "detached override reported");
+        Check(SendMessageW(hwnd, dt::OwnedMask, 0, 0) == dt::All, "restore includes detached chat");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore");
+        Pump();
         Check(fake->clears == 1 && fake->nodes.at(1).value == L"Visible" && !fake->nodes.at(1).local, "default restored by clearing local value");
         Check(fake->nodes.at(2).value == L"Visible" && fake->nodes.at(2).local, "original local value restored");
+        Check(SendMessageW(hwnd, dt::QueryVisible, dt::Chat, 0) == 0x10001, "detached chat is live and visible after restore");
+        Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before handle replacement");
+        fake->Drop(1); Pump();
+        fake->ReAdd(1); Pump();
+        Check(SendMessageW(hwnd, dt::Active, dt::Chat, 0) == 1, "new handle for same object retains baseline");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore after handle replacement");
+        Check(fake->nodes.at(1).value == L"Visible", "new handle restores original visible value");
+        Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before failed restoration");
+        fake->failRegister = true;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == -1, "failed object registration cannot report restored");
+        Check(SendMessageW(hwnd, dt::Active, dt::Chat, 0) == 1, "failed restore retains ownership for retry");
+        fake->failRegister = false;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "retry restore succeeds");
+        Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before app binding takes over");
+        fake->nodes.at(1).binding = true;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "do not overwrite app binding");
+        Check(SendMessageW(hwnd, dt::Active, 0, 0) == 0 && SendMessageW(hwnd, dt::QueryVisible, dt::Chat, 0) == 1,
+              "no owned overrides does not imply a visible Chat button");
+        fake->nodes.at(1).value = L"Visible";
         fake->nodes.at(1).binding = true;
         writes = fake->writes;
         Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == -1, "binding rejected");
