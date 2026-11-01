@@ -47,6 +47,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     HWND window = nullptr;
     dt::PreferencesStore preferences;
     unsigned flags = 0;
+    std::wstring changeError;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
     HRESULT lastQueryError = S_OK;
     std::map<InstanceHandle, Button> buttons; // Accessed only on SetSite's UI thread.
@@ -94,7 +95,8 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 [](void* context, unsigned selection) {
                     auto self = static_cast<Tap*>(context);
                     return static_cast<HRESULT>(self->Message(self->window, dt::ChangeAndSave, selection, 0));
-                }
+                },
+                [](void* context) { return static_cast<Tap*>(context)->changeError; }
             });
             return 0;
         }
@@ -212,16 +214,35 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     HRESULT ChangeFromSettings(unsigned selection) {
+        changeError.clear();
         unsigned previous = flags;
         bool applied = Message(window, dt::Configure, selection, 0) == 0;
         for (auto const& item : dt::NativeTargets) if (selection & item.flag) {
             unsigned target = item.flag;
             auto counts = static_cast<unsigned>(Message(window, dt::Query, target, 0));
+            if ((counts & 0xffff) == 0 && !item.optional)
+                changeError += std::wstring(L"Target not found: ") + item.id + L". ";
+            for (const auto& [node, button] : buttons) {
+                (void)node;
+                if (button.target != target || button.failure == dt::NoFailure) continue;
+                wchar_t detail[256]{};
+                swprintf_s(detail, L"%s: stage=%u, hr=0x%08lX, metadata=0x%llX, source=%u. ",
+                    item.id, static_cast<unsigned>(button.failure), static_cast<unsigned long>(button.error),
+                    static_cast<unsigned long long>(button.metadata), static_cast<unsigned>(button.source));
+                changeError += detail;
+            }
             applied = applied && ((item.optional && counts == 0) ||
                 ((counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff)));
         }
         HRESULT hr = applied ? preferences.Write(selection) : E_FAIL;
-        if (FAILED(hr)) Message(window, dt::Configure, previous, 0);
+        if (FAILED(hr)) {
+            if (changeError.empty()) {
+                wchar_t detail[64]{};
+                swprintf_s(detail, L"Apply/save error: 0x%08lX.", static_cast<unsigned long>(hr));
+                changeError = detail;
+            }
+            Message(window, dt::Configure, previous, 0);
+        }
         return hr;
     }
     std::shared_ptr<IInspectable> Instance(InstanceHandle node) {
@@ -266,11 +287,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         // An unset string can be reported as null. No arbitrary property values
         // or x:Names are retained: the callback passes only known target keys.
         if (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty()) ++missingIds;
-        if (id && id->MetadataBits && id->MetadataBits != IsValueNull) return;
+        if (family != dt::Family::Host && id && id->MetadataBits && id->MetadataBits != IsValueNull) return;
         Button button;
-        button.target = dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget, family);
+        // Structural hosts are identified by their exact layout x:Name;
+        // their separate UIA ID may be customized by Dia.
+        button.target = family == dt::Family::Host ? namedTarget :
+            dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget, family);
         if (button.target == dt::None) return;
-        if (button.target == namedTarget && (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
+        if (button.target == namedTarget && (family == dt::Family::Host || !id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         auto [it, inserted] = buttons.emplace(node, button);
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
     }
@@ -404,11 +428,14 @@ public:
             auto type = dt::Text(element.Type);
             if (type == L"Microsoft.UI.Xaml.Controls.NavigationView" || type == L"NavigationView")
                 return PostMessageW(window, dt::SettingsNode, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
-            if (dt::IsRepeaterType(type)) family = dt::Family::Repeater;
-            else if (dt::IsHostType(type)) family = dt::Family::Host;
-            else if (!dt::IsButtonType(type)) return S_OK;
-            namedTarget = dt::Identify(dt::Text(element.Name), family);
-            if (family == dt::Family::Host && namedTarget == dt::None) return S_OK;
+            // Dia uses custom host types as well as built-in panels/presenters.
+            // Exact known host x:Names identify the wrapper independently of type.
+            namedTarget = dt::IdentifyHost(dt::Text(element.Name));
+            if (namedTarget != dt::None) family = dt::Family::Host;
+            else {
+                if (!dt::IsButtonType(type)) return S_OK;
+                namedTarget = dt::Identify(dt::Text(element.Name));
+            }
             ++eligible;
         }
         return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget | (static_cast<LPARAM>(family) << 8)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());

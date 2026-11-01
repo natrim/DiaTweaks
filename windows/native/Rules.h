@@ -14,11 +14,12 @@ inline constexpr NativeTarget NativeTargets[] = {
     {Sidebar, L"SidebarToggleButton", Family::Button, false},
     {Downloads, L"DownloadsButton", Family::Button, false},
     {Bookmark, L"BookmarkButton", Family::Button, false},
-    {Extensions, L"PinnedExtensionsRepeater", Family::Repeater, false},
-    {ExtensionsOverflow, L"PinnedExtensionsOverflowButton", Family::Button, true},
+    {Extensions, L"PinnedExtensionsHost", Family::Host, false},
     {Toolbar, L"NavigationBarHost", Family::Host, false},
     {BookmarksBar, L"BookmarksBarHost", Family::Host, true}
 };
+// Bit 32 remains accepted for preferences written by protocol 7.
+// The host contains both the repeater and its overflow; do not patch those children.
 inline constexpr unsigned ExtensionParts = Extensions | ExtensionsOverflow;
 inline constexpr unsigned ToolbarParts = Toolbar | BookmarksBar;
 inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts;
@@ -44,6 +45,7 @@ inline Target Identify(std::wstring_view id, Family family = Family::Button) {
     for (auto const& item : NativeTargets) if (item.family == family && id == item.id) return item.flag;
     return None;
 }
+inline Target IdentifyHost(std::wstring_view name) { return Identify(name, Family::Host); }
 inline bool IsButtonType(std::wstring_view type) {
     return type == L"Microsoft.UI.Xaml.Controls.Button" || type == L"Button";
 }

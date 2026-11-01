@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <inspectable.h>
+#include <string>
 
 namespace dt {
 struct SettingsApi {
@@ -8,6 +9,7 @@ struct SettingsApi {
     unsigned (*read)(void*) = nullptr;
     bool (*available)(void*, unsigned) = nullptr;
     HRESULT (*write)(void*, unsigned) = nullptr;
+    std::wstring (*failure)(void*) = nullptr;
 };
 enum SettingsField : WPARAM { SettingsCandidates, SettingsInstalled, SettingsLastError };
 #ifdef DT_SETTINGS_UI

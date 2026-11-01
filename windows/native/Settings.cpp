@@ -227,8 +227,12 @@ struct Settings : std::enable_shared_from_this<Settings> {
         try {
             HRESULT hr = api.write(api.context, flags);
             Refresh();
-            status.Text(SUCCEEDED(hr) ? (flags ? L"Changes applied and saved." : L"All tweaks are off.")
-                                     : L"Couldn’t apply or save that change. Previous settings restored.");
+            if (SUCCEEDED(hr)) status.Text(flags ? L"Changes applied and saved." : L"All tweaks are off.");
+            else {
+                std::wstring message = L"Couldn’t apply or save that change. Previous settings restored. ";
+                if (api.failure) message += api.failure(api.context);
+                status.Text(message);
+            }
         } catch (...) { lastError = to_hresult(); Refresh(); }
     }
     void Dispose() noexcept {

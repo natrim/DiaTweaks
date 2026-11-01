@@ -59,8 +59,10 @@ int main() {
             for (unsigned cycle = 0; cycle < 3; ++cycle) {
                 Check(SendMessageW(hwnd, dt::Configure, selection, 0) == 0, "new tweak applies repeatedly");
                 for (auto const& item : dt::NativeTargets) if (selection & item.flag)
-                    Check(SendMessageW(hwnd, dt::Query, item.flag, 0) == 0x10001, "new target readback");
+                    Check(SendMessageW(hwnd, dt::Query, item.flag, 0) == 0x10001, "custom hosts match exact layout names, regardless of runtime type or UIA ID");
                 Check(fake->nodes.at(3).value == L"Visible", "window caption untouched");
+                Check(fake->nodes.at(13).value == L"Visible" && fake->nodes.at(13).binding,
+                      "extensions host hides bound repeater without replacing its binding");
                 Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "new tweaks restore");
                 Pump();
                 for (auto handle : {7ull, 8ull, 9ull, 10ull, 11ull})

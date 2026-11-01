@@ -15,7 +15,7 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--hide-sidebar` | `hideSidebarButton` | `SidebarToggleButton` |
 | `--hide-downloads` | Windows addition | `DownloadsButton` |
 | `--hide-bookmark` | Windows addition | `BookmarkButton` |
-| `--hide-extensions` | Windows addition | `PinnedExtensionsRepeater` and optional `PinnedExtensionsOverflowButton` |
+| `--hide-extensions` | Windows addition | `PinnedExtensionsHost` (contains repeater and overflow) |
 | `--hide-toolbar` | `hideToolbar` (experimental) | `NavigationBarHost` and optional `BookmarksBarHost` |
 | `--restore` | Restore this session's overrides | Saved original properties |
 
@@ -67,7 +67,10 @@ The page contains switches for the toolbar, Chat, sidebar, downloads, bookmark,
 and extensions, availability notes, and a **Restore defaults** action.
 Whole-toolbar hiding disables individual switches while preserving their saved
 choices. Showing the toolbar again reapplies those choices. Optional bookmarks
-and overflow controls may be absent; they are patched if they appear later. Switches apply immediately
+controls may be absent; they are patched if they appear later.
+Host discovery uses exact x:Names across custom and built-in XAML types. Extensions
+are hidden at their wrapper, leaving the repeater’s app-owned bindings untouched.
+Failed changes show target/stage/HRESULT details on the Patches page. Switches apply immediately
 and follow CLI changes. The page uses WinUI controls and Dia's theme resources.
 Choosing one of Dia's own categories returns to its original content.
 

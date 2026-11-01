@@ -18,8 +18,9 @@ int main() {
         Check(dt::Identify(id) == dt::None, "unrelated UI must remain untouched");
     Check(dt::Identify(L"DownloadsButton") == dt::Downloads, "downloads selector");
     Check(dt::Identify(L"BookmarkButton") == dt::Bookmark, "bookmark selector");
-    Check(dt::Identify(L"PinnedExtensionsOverflowButton") == dt::ExtensionsOverflow, "extensions overflow selector");
-    Check(dt::Identify(L"PinnedExtensionsRepeater", dt::Family::Repeater) == dt::Extensions, "extension repeater");
+    Check(dt::Identify(L"PinnedExtensionsOverflowButton") == dt::None, "overflow left to its parent host");
+    Check(dt::IdentifyHost(L"PinnedExtensionsHost") == dt::Extensions, "extensions wrapper selector");
+    Check(dt::Identify(L"PinnedExtensionsRepeater", dt::Family::Repeater) == dt::None, "bound repeater untouched");
     Check(dt::Identify(L"NavigationBarHost", dt::Family::Host) == dt::Toolbar, "navigation host");
     Check(dt::Identify(L"BookmarksBarHost", dt::Family::Host) == dt::BookmarksBar, "bookmarks host");
     Check(dt::Identify(L"PinnedExtensionsRepeater") == dt::None &&

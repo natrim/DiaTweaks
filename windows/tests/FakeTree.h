@@ -79,10 +79,11 @@ public:
         {6, {L"ChatButton", L"Visible", false, false, L"ChatButton", L"Microsoft.UI.Xaml.Controls.TextBlock"}},
         {7, {L"DownloadsButton", L"Visible", false, false}},
         {8, {L"BookmarkButton", L"Visible", true, false}},
-        {9, {L"", L"Visible", false, false, L"PinnedExtensionsRepeater", L"ItemsRepeater"}},
+        {9, {L"", L"Visible", false, false, L"PinnedExtensionsHost", L"Dia.CustomHost"}},
         {10, {L"PinnedExtensionsOverflowButton", L"Visible", false, false}},
-        {11, {L"", L"Visible", false, false, L"NavigationBarHost", L"ContentPresenter"}},
-        {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"ContentPresenter", false, L"Collapsed"}}
+        {11, {L"CustomToolbarAutomationId", L"Visible", false, false, L"NavigationBarHost", L"ContentControl"}},
+        {13, {L"PinnedExtensionsRepeater", L"Visible", false, true, L"PinnedExtensionsRepeater", L"ItemsRepeater"}},
+        {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"Grid", false, L"Collapsed"}}
     };
     unsigned clears = 0, writes = 0;
     unsigned staleValueWrites = 0;
