@@ -8,6 +8,11 @@ int main() {
     // captions, navigation controls, extensions or similarly named future controls.
     Check(dt::Identify(L"ChatButton") == dt::Chat, "chat selector");
     Check(dt::Identify(L"SidebarToggleButton") == dt::Sidebar, "sidebar selector");
+    Check(dt::IdentifyButton(L"", dt::Chat) == dt::Chat, "UIA ID can come from x:Name");
+    Check(dt::IdentifyButton(L"OtherButton", dt::Chat) == dt::None, "explicit unknown ID overrides known x:Name");
+    Check(dt::IdentifyButton(L"SidebarToggleButton", dt::Chat) == dt::Sidebar, "explicit ID takes precedence");
+    Check(dt::IsButtonType(L"Button") && dt::IsButtonType(L"Microsoft.UI.Xaml.Controls.Button"), "short and full type names");
+    Check(!dt::IsButtonType(L"Microsoft.UI.Xaml.Controls.TextBlock"), "a named label is not a button");
     for (auto id : {L"ChatButtonLabel", L"chatbutton", L"OtherChatButton", L"SidebarToggleButton2",
                     L"BackButton", L"BookmarkButton", L"DownloadsButton", L"CloseButton", L"", L"ChatButton\n"})
         Check(dt::Identify(id) == dt::None, "unrelated UI must remain untouched");

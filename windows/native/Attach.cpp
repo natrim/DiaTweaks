@@ -55,6 +55,18 @@ LRESULT Send(HWND hwnd, UINT message, WPARAM data = 0) {
         throw std::runtime_error("Dia did not respond to the patch controller.");
     return static_cast<LRESULT>(result);
 }
+void Diagnostics(HWND hwnd) {
+    std::wcerr << L"Discovery: added=" << Send(hwnd, dt::Stats, dt::Added)
+               << L", buttons=" << Send(hwnd, dt::Stats, dt::Eligible)
+               << L", inspected=" << Send(hwnd, dt::Stats, dt::Inspected)
+               << L", queryErrors=" << Send(hwnd, dt::Stats, dt::FailedQueries)
+               << L", emptyIds=" << Send(hwnd, dt::Stats, dt::MissingIds)
+               << L", xNameMatches=" << Send(hwnd, dt::Stats, dt::NamedMatches)
+               << L", tracked=" << Send(hwnd, dt::Stats, dt::Tracked)
+               << L", missingVisibility=" << Send(hwnd, dt::Stats, dt::MissingVisibility)
+               << L", lastQueryError=0x" << std::hex
+               << static_cast<unsigned long>(Send(hwnd, dt::Stats, dt::LastQueryError)) << std::dec << L'\n';
+}
 std::vector<fs::path> Modules(DWORD pid) {
     Handle process{OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid)};
     if (!process.value) throw std::runtime_error("Cannot inspect Dia. Run as the same user, without elevation.");
@@ -142,6 +154,8 @@ int wmain(int argc, wchar_t** argv) {
             pid = *processes.begin();
         }
         HWND window = FindTap(pid);
+        if (window && Send(window, dt::Version) != dt::ProtocolVersion)
+            throw std::runtime_error("An older DiaTweaks DLL is still loaded. Quit all Dia processes, replace both the EXE and DLL, then reopen Dia.");
         if (!window && restore) { std::wcout << L"No DiaTweaks session is attached.\n"; return 0; }
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
@@ -167,6 +181,8 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (!window || Send(window, dt::State) != 1)
             throw std::runtime_error("The XAML tree subscription did not become ready. Restart Dia before retrying.");
+        if (Send(window, dt::Version) != dt::ProtocolVersion)
+            throw std::runtime_error("EXE and DLL versions differ. Quit Dia and replace both files together.");
         // Posted replay notifications may still be pending when Advise returns.
         if (!restore) {
             ULONGLONG deadline = GetTickCount64() + 5000;
@@ -193,6 +209,7 @@ int wmain(int argc, wchar_t** argv) {
             bool rolledBack = !restore && Send(window, dt::Configure, previous) == 0;
             std::wcerr << L"Could not verify every requested change. "
                        << (rolledBack ? L"Previous selection restored.\n" : L"Restart Dia to restore its UI.\n");
+            Diagnostics(window);
             return 1;
         }
         std::wcout << (restore ? L"DiaTweaks overrides restored.\n" : L"Requested button visibility verified through XAML diagnostics.\n");

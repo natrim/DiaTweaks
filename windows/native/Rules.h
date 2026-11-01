@@ -9,6 +9,14 @@ inline Target Identify(std::wstring_view automationId) {
     if (automationId == L"SidebarToggleButton") return Sidebar;
     return None;
 }
+inline bool IsButtonType(std::wstring_view type) {
+    return type == L"Microsoft.UI.Xaml.Controls.Button" || type == L"Button";
+}
+// WinUI's automation peer uses x:Name when its attached AutomationId is empty.
+// A nonempty explicit ID takes precedence, including an unknown ID.
+inline Target IdentifyButton(std::wstring_view automationId, Target namedTarget) {
+    return automationId.empty() ? namedTarget : Identify(automationId);
+}
 inline bool IsProperty(std::wstring_view name, std::wstring_view property) {
     return name == property || (name.size() > property.size() &&
         name[name.size() - property.size() - 1] == L'.' &&

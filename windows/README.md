@@ -46,6 +46,11 @@ Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
 .\DiaTweaks.exe --hide-chat --hide-sidebar
 ```
 
+When upgrading this experimental build, quit all Dia processes first, then
+replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded
+until the process exits. The controller checks the session's protocol version
+and rejects an older loaded DLL.
+
 Each command replaces the active selection. To hide only Chat:
 
 ```powershell
@@ -81,6 +86,18 @@ properties on the UI thread. Only exact observed AutomationIds match. It changes
 plain Visibility values and refuses bindings, animations and visual-state
 sources. For restoration it retains a plain local value or clears its override
 to let the original style/default take effect. App-side changes are left alone.
+
+UI Automation may expose a button's XAML `x:Name` as its AutomationId when the
+attached AutomationId property is empty. Matching handles that fallback; a
+nonempty explicit AutomationId takes precedence. This follows WinUI's
+[`CAutomationPeer::GetAutomationIdHelper`](https://github.com/microsoft/microsoft-ui-xaml/blob/main/dxaml/xcp/core/core/elements/AutomationPeer.cpp).
+
+On failure, a `Discovery:` line reports numeric counters (received additions,
+eligible button types, inspected handles, property-query failures, empty IDs,
+matches through x:Name, tracked controls and missing Visibility properties).
+It also includes the last failed discovery HRESULT. It does not print UI text,
+page URLs or unknown element names. A matched control with unreadable Visibility
+is included in the denominator, so that case is distinguishable from no match.
 
 The diagnostics DLL and subscription remain resident until Dia exits. Repeated
 commands use the existing message-only control window rather than opening a

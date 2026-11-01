@@ -21,10 +21,13 @@ struct Button {
 class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::atomic<ULONG> refs{1};
     std::atomic<int> state{0}; // 0 = replaying, 1 = ready, -1 = subscription failed
+    std::atomic<unsigned> added{0}, eligible{0};
     IUnknown* site = nullptr;
     IVisualTreeService* service = nullptr;
     HWND window = nullptr;
     unsigned flags = 0;
+    unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
+    HRESULT lastQueryError = S_OK;
     std::map<InstanceHandle, Button> buttons; // Accessed only on SetSite's UI thread.
 
     static DWORD WINAPI Subscribe(void* context) noexcept {
@@ -49,9 +52,32 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+        if (msg == dt::Version) return dt::ProtocolVersion;
+        if (msg == dt::Stats) {
+            switch (wp) {
+            case dt::Added: return added.load();
+            case dt::Eligible: return eligible.load();
+            case dt::Inspected: return inspected;
+            case dt::FailedQueries: return failedQueries;
+            case dt::MissingIds: return missingIds;
+            case dt::NamedMatches: return namedMatches;
+            case dt::Tracked: return static_cast<LRESULT>(buttons.size());
+            case dt::LastQueryError: return lastQueryError;
+            case dt::MissingVisibility: {
+                unsigned missing = 0;
+                for (const auto& [node, button] : buttons) {
+                    (void)button;
+                    dt::Properties p(service, node);
+                    if (!p.Find(L"Visibility")) ++missing;
+                }
+                return missing;
+            }
+            default: return -1;
+            }
+        }
         if (msg == dt::State) return state.load();
         if (msg == dt::Flags) return flags;
-        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp)); return 0; }
+        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(lp)); return 0; }
         if (msg == dt::RemoveNode) { buttons.erase(static_cast<InstanceHandle>(wp)); return 0; }
         if (msg == dt::Configure) {
             if (wp & ~dt::All) return -1;
@@ -70,24 +96,30 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::Query) {
             unsigned matched = 0, hidden = 0;
             for (const auto& [node, button] : buttons) if (button.target & wp) {
+                ++matched; // A matched selector stays counted even if Visibility is unreadable.
                 dt::Properties p(service, node);
                 auto v = p.Find(L"Visibility");
                 if (!v) continue;
-                ++matched;
                 if (!v->MetadataBits && dt::IsCollapsed(dt::Text(v->Value))) ++hidden;
             }
             return static_cast<LRESULT>((hidden << 16) | matched);
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
-    void Discover(InstanceHandle node) {
+    void Discover(InstanceHandle node, dt::Target namedTarget) {
         if (buttons.count(node) || buttons.size() >= 4096) return;
+        ++inspected;
         dt::Properties p(service, node);
+        if (FAILED(p.result)) { ++failedQueries; lastQueryError = p.result; return; }
         auto id = p.Find(L"AutomationId");
-        if (!id || id->MetadataBits) return;
+        // An unset string can be reported as null. No arbitrary property values
+        // or x:Names are retained: the callback passes only our two known keys.
+        if (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty()) ++missingIds;
+        if (id && id->MetadataBits && id->MetadataBits != IsValueNull) return;
         Button button;
-        button.target = dt::Identify(dt::Text(id->Value));
+        button.target = dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget);
         if (button.target == dt::None) return;
+        if (button.target == namedTarget && (!id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         auto [it, inserted] = buttons.emplace(node, button);
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
     }
@@ -180,8 +212,14 @@ public:
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation, VisualElement element, VisualMutationType mutation) noexcept override {
         // Only queue handles. All property access and layout changes happen later on the UI thread.
         UINT msg = mutation == Remove ? dt::RemoveNode : dt::AddNode;
-        if (mutation == Add && dt::Text(element.Type) != L"Microsoft.UI.Xaml.Controls.Button") return S_OK;
-        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+        dt::Target namedTarget = dt::None;
+        if (mutation == Add) {
+            ++added;
+            if (!dt::IsButtonType(dt::Text(element.Type))) return S_OK;
+            ++eligible;
+            namedTarget = dt::Identify(dt::Text(element.Name));
+        }
+        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
     }
     ~Tap() {
         if (service) service->Release();
