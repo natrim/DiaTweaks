@@ -15,7 +15,13 @@ HINSTANCE module;
 struct Button {
     dt::Target target = dt::None;
     unsigned property = 0;
-    InstanceHandle original = 0, collapsed = 0;
+    // Keep semantic baseline values, never cache a temporary boxed enum handle
+    // across property writes: diagnostics may evict that value after restore.
+    std::wstring originalValue, valueType;
+    dt::Stage failure = dt::NoFailure;
+    HRESULT error = S_OK;
+    LONGLONG metadata = 0;
+    BaseValueSource source = BaseValueSourceUnknown;
     bool local = false, active = false, detached = false;
     std::shared_ptr<IInspectable> instance;
     std::shared_ptr<IUnknown> identity;
@@ -65,6 +71,22 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == dt::Version) return dt::ProtocolVersion;
+        if (msg == dt::Failure) {
+            auto target = static_cast<unsigned>(wp & 0xff);
+            auto field = static_cast<unsigned>(wp >> 8);
+            for (const auto& [node, button] : buttons) {
+                (void)node;
+                if (button.target != target || button.failure == dt::NoFailure) continue;
+                switch (field) {
+                case dt::FailureStage: return button.failure;
+                case dt::FailureError: return button.error;
+                case dt::FailureMetadata: return static_cast<LRESULT>(button.metadata);
+                case dt::FailureSource: return button.source;
+                default: return -1;
+                }
+            }
+            return 0;
+        }
         if (msg == dt::Stats) {
             switch (wp) {
             case dt::Added: return added.load();
@@ -201,16 +223,21 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
     }
     bool Apply(InstanceHandle node, Button& button, bool enable) {
+        auto fail = [&](dt::Stage stage, HRESULT error) {
+            button.failure = stage; button.error = error; return false;
+        };
         if (!enable && !button.active) return true;
         // A removed visual's old handle can already be invalid. Keep the actual
         // object alive and register it again before attempting restoration.
         if (button.active && button.instance) {
             HRESULT hr = diagnostics->RegisterInstance(button.instance.get(), &node);
-            if (FAILED(hr)) { lastQueryError = hr; return false; }
+            if (FAILED(hr)) { lastQueryError = hr; return fail(dt::RegisterTarget, hr); }
         }
         dt::Properties p(service, node);
         auto v = p.Find(L"Visibility");
-        if (!v || dt::Text(v->Type) != L"Microsoft.UI.Xaml.Visibility") return false;
+        if (!v) return fail(dt::ReadVisibility, FAILED(p.result) ? p.result : HRESULT_FROM_WIN32(ERROR_NOT_FOUND));
+        button.metadata = v->MetadataBits; button.source = p.Source(*v);
+        if (dt::Text(v->Type) != L"Microsoft.UI.Xaml.Visibility") return fail(dt::VisibilityType, E_NOTIMPL);
         if (!enable) {
             // If Dia has since changed the value itself, do not overwrite its change.
             if (v->MetadataBits || p.HasBinding(v->Index) || !dt::IsCollapsed(dt::Text(v->Value))) {
@@ -223,7 +250,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (FAILED(hr)) return false;
             dt::Properties restored(service, node);
             auto original = restored.Find(L"Visibility");
-            if (!original || original->MetadataBits || !dt::IsVisible(dt::Text(original->Value))) return false;
+            if (!original || original->MetadataBits || !dt::IsVisible(dt::Text(original->Value))) return fail(dt::VerifyRestored, FAILED(restored.result) ? restored.result : E_FAIL);
             button.active = false;
             button.identity.reset(); button.instance.reset();
             return true;
@@ -234,27 +261,41 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         auto source = p.Source(*v);
         bool simple = source == BaseValueSourceLocal || source == BaseValueSourceDefault ||
                       source == BaseValueSourceBuiltInStyle || source == BaseValueSourceStyle;
-        if (!dt::CanOverride(v->MetadataBits == 0, simple, p.HasBinding(v->Index), dt::Text(v->Value))) return false;
+        if (!dt::CanOverride(v->MetadataBits == 0, simple, p.HasBinding(v->Index), dt::Text(v->Value))) return fail(dt::VisibilityPolicy, S_FALSE);
         if (!button.instance) button.instance = Instance(node);
         if (!button.identity) button.identity = Identity(button.instance.get());
-        if (!button.instance || !button.identity) return false;
+        if (!button.instance || !button.identity) return fail(dt::HoldTarget, FAILED(lastQueryError) ? lastQueryError : E_NOINTERFACE);
         button.property = v->Index;
         button.local = source == BaseValueSourceLocal;
-        std::wstring type(dt::Text(v->Type));
-        if (button.local && FAILED(dt::CreateValue(service, type, std::wstring(dt::Text(v->Value)), &button.original))) return false;
-        if (!button.collapsed && FAILED(dt::CreateValue(service, type, L"Collapsed", &button.collapsed))) return false;
-        HRESULT hr = service->SetProperty(node, button.collapsed, button.property);
-        if (FAILED(hr)) return false;
+        button.valueType = std::wstring(dt::Text(v->Type));
+        button.originalValue = std::wstring(dt::Text(v->Value));
+        InstanceHandle collapsed = 0;
+        HRESULT hr = dt::CreateValue(service, button.valueType, L"Collapsed", &collapsed);
+        if (FAILED(hr)) return fail(dt::CreateCollapsed, hr);
+        hr = service->SetProperty(node, collapsed, button.property);
+        if (FAILED(hr)) return fail(dt::SetCollapsed, hr);
         button.active = true;
         dt::Properties after(service, node);
         auto changed = after.Find(L"Visibility");
-        if (changed && !changed->MetadataBits && dt::IsCollapsed(dt::Text(changed->Value))) return true;
+        if (changed && !changed->MetadataBits && dt::IsCollapsed(dt::Text(changed->Value))) {
+            button.failure = dt::NoFailure; button.error = S_OK; return true;
+        }
         if (SUCCEEDED(Restore(node, button))) button.active = false;
-        return false;
+        return fail(dt::VerifyCollapsed, FAILED(after.result) ? after.result : E_FAIL);
     }
-    HRESULT Restore(InstanceHandle node, const Button& button) {
-        return button.local ? service->SetProperty(node, button.original, button.property)
-                            : service->ClearProperty(node, button.property);
+    HRESULT Restore(InstanceHandle node, Button& button) {
+        HRESULT hr;
+        if (button.local) {
+            InstanceHandle original = 0;
+            hr = dt::CreateValue(service, button.valueType, button.originalValue, &original);
+            if (FAILED(hr)) { button.failure = dt::CreateOriginal; button.error = hr; return hr; }
+            hr = service->SetProperty(node, original, button.property);
+            if (FAILED(hr)) { button.failure = dt::SetOriginal; button.error = hr; }
+        } else {
+            hr = service->ClearProperty(node, button.property);
+            if (FAILED(hr)) { button.failure = dt::ClearOriginal; button.error = hr; }
+        }
+        return hr;
     }
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) noexcept override {

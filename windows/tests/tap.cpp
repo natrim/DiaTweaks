@@ -32,6 +32,8 @@ class FakeTree final : public IVisualTreeService, public IXamlDiagnostics {
     std::atomic<ULONG> refs{1};
     DWORD uiThread = GetCurrentThreadId();
     std::vector<std::wstring> created{L""};
+    std::set<InstanceHandle> retiredValues;
+    std::map<InstanceHandle, InstanceHandle> assignedValue;
     IVisualTreeServiceCallback* callback = nullptr;
     std::map<InstanceHandle, std::shared_ptr<FakeElement>> elements;
     std::map<InstanceHandle, InstanceHandle> aliases, current;
@@ -75,6 +77,7 @@ public:
         {6, {L"ChatButton", L"Visible", false, false, L"ChatButton", L"Microsoft.UI.Xaml.Controls.TextBlock"}}
     };
     unsigned clears = 0, writes = 0;
+    unsigned staleValueWrites = 0;
     bool ignoreWrites = false;
     bool failRegister = false;
     void Drop(InstanceHandle canonical) {
@@ -142,7 +145,10 @@ public:
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
         auto canonical = Resolve(handle);
         if (index != 11 || !nodes.count(canonical) || value >= created.size()) return E_INVALIDARG;
+        if (retiredValues.count(value)) { ++staleValueWrites; return E_INVALIDARG; }
         if (!ignoreWrites) {
+            if (assignedValue[canonical] && assignedValue[canonical] != value) retiredValues.insert(assignedValue[canonical]);
+            assignedValue[canonical] = value;
             nodes.at(canonical).value = created[static_cast<size_t>(value)]; nodes.at(canonical).local = true; ++writes;
             ReinsertIfVisible(canonical);
         }
@@ -152,6 +158,8 @@ public:
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
         auto canonical = Resolve(handle);
         if (index != 11 || !nodes.count(canonical)) return E_INVALIDARG;
+        if (assignedValue[canonical]) retiredValues.insert(assignedValue[canonical]);
+        assignedValue[canonical] = 0;
         nodes.at(canonical).value = L"Visible"; nodes.at(canonical).local = false; ++clears;
         ReinsertIfVisible(canonical);
         return S_OK;
@@ -223,6 +231,21 @@ int main() {
         Check(fake->clears == 1 && fake->nodes.at(1).value == L"Visible" && !fake->nodes.at(1).local, "default restored by clearing local value");
         Check(fake->nodes.at(2).value == L"Visible" && fake->nodes.at(2).local, "original local value restored");
         Check(SendMessageW(hwnd, dt::QueryVisible, dt::Chat, 0) == 0x10001, "detached chat is live and visible after restore");
+        // Retire boxed values when they leave a property. Sidebar keeps its
+        // original visual handle, so a cached Collapsed handle fails cycle two.
+        for (unsigned cycle = 0; cycle < 4; ++cycle) {
+            for (unsigned selection : {dt::Sidebar, dt::Chat, static_cast<dt::Target>(dt::All)}) {
+                Check(SendMessageW(hwnd, dt::Configure, selection, 0) == 0, "repeat hide after restore");
+                for (unsigned target : {dt::Chat, dt::Sidebar}) if (selection & target)
+                    Check(SendMessageW(hwnd, dt::Query, target, 0) == 0x10001, "repeated hide readback");
+                Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "repeat restoration");
+                Pump();
+                Check(SendMessageW(hwnd, dt::QueryVisible, dt::Chat, 0) == 0x10001 &&
+                      SendMessageW(hwnd, dt::QueryVisible, dt::Sidebar, 0) == 0x10001, "both visible after each cycle");
+                Check(SendMessageW(hwnd, dt::Active, 0, 0) == 0, "cycle releases owned overrides");
+            }
+        }
+        Check(fake->staleValueWrites == 0, "no cached value handles reused across cycles");
         Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before handle replacement");
         fake->Drop(1); Pump();
         fake->ReAdd(1); Pump();

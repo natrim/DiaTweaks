@@ -67,6 +67,21 @@ void Diagnostics(HWND hwnd) {
                << L", detachedOverrides=" << Send(hwnd, dt::Stats, dt::DetachedOverrides)
                << L", lastQueryError=0x" << std::hex
                << static_cast<unsigned long>(Send(hwnd, dt::Stats, dt::LastQueryError)) << std::dec << L'\n';
+    const wchar_t* stages[] = {
+        L"none", L"register-target", L"read-visibility", L"visibility-type", L"visibility-policy",
+        L"hold-target", L"create-collapsed", L"set-collapsed", L"verify-collapsed", L"create-original",
+        L"set-original", L"clear-original", L"verify-restored"
+    };
+    for (unsigned target : {dt::Chat, dt::Sidebar}) {
+        auto detail = [&](dt::FailureField field) { return Send(hwnd, dt::Failure, target | (static_cast<WPARAM>(field) << 8)); };
+        auto stage = static_cast<unsigned>(detail(dt::FailureStage));
+        if (!stage) continue;
+        std::wcerr << (target == dt::Chat ? L"ChatButton" : L"SidebarToggleButton")
+                   << L" failure: stage=" << (stage < std::size(stages) ? stages[stage] : L"unknown")
+                   << L", hr=0x" << std::hex << static_cast<unsigned long>(detail(dt::FailureError))
+                   << L", metadata=0x" << static_cast<unsigned long long>(detail(dt::FailureMetadata))
+                   << std::dec << L", source=" << detail(dt::FailureSource) << L'\n';
+    }
 }
 std::vector<fs::path> Modules(DWORD pid) {
     Handle process{OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid)};

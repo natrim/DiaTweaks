@@ -38,6 +38,8 @@ The mock exercises UI-thread dispatch, matching, property readback, restoration,
 binding preservation and rollback. It also removes hidden visuals, invalidates
 their old handles, reintroduces the same object under a new handle, and tests
 failed restoration and retry. It does not simulate the actual WinUI loader.
+It retires replaced boxed values and runs repeated sidebar-only, Chat-only and
+combined hide/restore cycles, checking both button visibility and ownership.
 The Windows workflow runs these checks and uploads those two output files.
 
 ## Run
@@ -104,6 +106,11 @@ invalid, or transfer the original baseline when the same object is added under
 a new handle. References are released after restoring the owned value.
 See [RegisterInstance](https://learn.microsoft.com/en-us/windows/win32/api/xamlom/nf-xamlom-ixamldiagnostics-registerinstance).
 
+Original local Visibility is stored as its type and primitive enum text. Each
+hide and each local-value restoration creates a fresh boxed value immediately
+before SetProperty. A temporary boxed value's diagnostics handle is not reused
+across hide/restore cycles.
+
 UI Automation may expose a button's XAML `x:Name` as its AutomationId when the
 attached AutomationId property is empty. Matching handles that fallback; a
 nonempty explicit AutomationId takes precedence. This follows WinUI's
@@ -116,6 +123,9 @@ detached owned overrides).
 It also includes the last failed discovery HRESULT. It does not print UI text,
 page URLs or unknown element names. A matched control with unreadable Visibility
 is included in the denominator, so that case is distinguishable from no match.
+A per-button failure line identifies the failed stage and its HRESULT, plus
+Visibility's metadata bits and source. This distinguishes a rejected policy,
+expired value handle, failed write and failed readback from a discovery error.
 
 The diagnostics DLL and subscription remain resident until Dia exits. Repeated
 commands use the existing message-only control window rather than opening a

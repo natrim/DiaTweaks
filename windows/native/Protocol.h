@@ -8,7 +8,14 @@ inline constexpr UINT Configure = WM_APP + 3, State = WM_APP + 4;
 inline constexpr UINT Query = WM_APP + 5, Flags = WM_APP + 6, Active = WM_APP + 7;
 inline constexpr UINT Version = WM_APP + 8, Stats = WM_APP + 9;
 inline constexpr UINT OwnedMask = WM_APP + 10, QueryVisible = WM_APP + 11;
-inline constexpr LRESULT ProtocolVersion = 3;
+inline constexpr UINT Failure = WM_APP + 12;
+inline constexpr LRESULT ProtocolVersion = 4;
+enum FailureField : unsigned { FailureStage, FailureError, FailureMetadata, FailureSource };
+enum Stage : unsigned {
+    NoFailure, RegisterTarget, ReadVisibility, VisibilityType, VisibilityPolicy,
+    HoldTarget, CreateCollapsed, SetCollapsed, VerifyCollapsed, CreateOriginal,
+    SetOriginal, ClearOriginal, VerifyRestored
+};
 enum Stat : WPARAM {
     Added, Eligible, Inspected, FailedQueries, MissingIds, NamedMatches,
     Tracked, MissingVisibility, LastQueryError, DetachedOverrides
