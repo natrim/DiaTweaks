@@ -19,6 +19,7 @@ class FakeElement final : public IInspectable {
 public:
     InstanceHandle canonical;
     FakeElement* parent = nullptr;
+    bool headerPeers = false;
     const wchar_t* name = L"";
     explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -74,6 +75,7 @@ public:
         bool omitVisibility = false;
         const wchar_t* defaultValue = L"Visible";
         InstanceHandle parent = 0;
+        bool headerPeers = false;
     };
     std::map<InstanceHandle, Node> nodes{
         {1, {L"", L"Visible", false, false, L"ChatButton"}},
@@ -89,8 +91,8 @@ public:
         {11, {L"CustomToolbarAutomationId", L"Visible", false, false, L"NavigationBarHost", L"ContentControl"}},
         {13, {L"PinnedExtensionsRepeater", L"Visible", false, true, L"PinnedExtensionsRepeater", L"ItemsRepeater"}},
         {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"Grid", false, L"Collapsed"}},
-        {14, {L"", L"Visible", false, false, L"SidebarPresenter", L"ContentControl"}},
-        {15, {L"", L"Visible", false, false, L"WindowDragHeader", L"Grid", false, L"Visible", 14}},
+        {14, {L"SpacesScrollViewer", L"Visible", false, false, L"", L"ContentControl"}},
+        {15, {L"", L"Visible", false, false, L"", L"Grid", false, L"Visible", 14, true}},
         {16, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 15}},
         {17, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button"}},
         {18, {L"SpaceSwitcherButton", L"Visible", true, false}},
@@ -202,7 +204,9 @@ public:
         if (!nodes.count(canonical)) return E_INVALIDARG;
         if (!elements.count(canonical)) elements.emplace(canonical, Adopt(new FakeElement(canonical)));
         auto element = elements.at(canonical).get();
-        element->name = nodes.at(canonical).name;
+        auto const& entry = nodes.at(canonical);
+        element->name = dt::IsScopeMarker(entry.name) ? entry.name : entry.id;
+        element->headerPeers = entry.headerPeers;
         auto parent = nodes.at(canonical).parent;
         element->parent = nullptr;
         if (parent) {
@@ -232,5 +236,6 @@ public:
 inline bool dt::IsSidebarHeader(IInspectable* object) noexcept {
     return InSidebarHeader(static_cast<FakeElement*>(object),
         [](FakeElement* item) { return item->parent; },
-        [](FakeElement* item) { return item->name; });
+        [](FakeElement* item) { return item->name; },
+        [](FakeElement* item) { return item->headerPeers; });
 }

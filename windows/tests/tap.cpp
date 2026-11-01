@@ -83,6 +83,17 @@ int main() {
               "failure protocol preserves high-bit target and field");
         fake->nodes.at(18).binding = false;
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "clear failed selection");
+        fake->Drop(16); Pump();
+        fake->nodes.at(15).headerPeers = false;
+        fake->ReAdd(16); Pump();
+        Check(SendMessageW(hwnd, dt::Query, dt::RecentTabs, 0) == 0, "not-yet-connected header remains unavailable");
+        fake->nodes.at(15).headerPeers = true;
+        auto scopeDeadline = GetTickCount64() + 2000;
+        while (GetTickCount64() < scopeDeadline && SendMessageW(hwnd, dt::Query, dt::RecentTabs, 0) == 0) { Pump(); Sleep(5); }
+        Check(SendMessageW(hwnd, dt::Query, dt::RecentTabs, 0) == 1, "late header connection is rediscovered without a second Add event");
+        Check(SendMessageW(hwnd, dt::Configure, dt::RecentTabs, 0) == 0, "late-discovered recent button can be hidden");
+        Check(fake->nodes.at(17).value == L"Visible" && fake->nodes.at(19).value == L"Visible", "retry preserves unrelated overflow menus");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "late-discovered recent button restores");
         Check(fake->staleValueWrites == 0, "no cached value handles reused across cycles");
         Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before handle replacement");
         fake->Drop(1); Pump();

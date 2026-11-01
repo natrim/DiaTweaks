@@ -303,6 +303,36 @@ LRESULT dt::SettingsStatus(WPARAM field) noexcept {
     return 0;
 }
 
+namespace {
+hstring ScopeLabel(DependencyObject const& item) {
+    auto element = item.try_as<FrameworkElement>();
+    if (!element) return {};
+    auto name = element.Name();
+    if (dt::IsScopeMarker(name)) return name;
+    auto id = Automation::AutomationProperties::GetAutomationId(element);
+    return dt::IsScopeMarker(id) ? id : hstring{};
+}
+bool HeaderPeers(DependencyObject const& root) {
+    struct Visit { DependencyObject node; unsigned depth; };
+    std::vector<Visit> queue{{root, 0}};
+    bool menu = false, spaces = false;
+    for (size_t i = 0; i < queue.size() && i < 64; ++i) {
+        auto item = queue[i];
+        auto label = ScopeLabel(item.node);
+        if (auto button = item.node.try_as<Button>()) {
+            menu = menu || label == L"AppMenuButton";
+            spaces = spaces || label == L"SpaceSwitcherButton";
+            if (menu && spaces) return true;
+            continue;
+        }
+        if (item.depth >= 4 || item.node.try_as<ScrollViewer>() || label == L"TabListScrollViewer" || label == L"RowsPanel") continue;
+        int count = VisualTreeHelper::GetChildrenCount(item.node);
+        for (int j = 0; j < count && queue.size() < 64; ++j)
+            queue.push_back({VisualTreeHelper::GetChild(item.node, j), item.depth + 1});
+    }
+    return false;
+}
+}
 bool dt::IsSidebarHeader(IInspectable* object) noexcept {
     try {
         Object instance{nullptr};
@@ -310,10 +340,8 @@ bool dt::IsSidebarHeader(IInspectable* object) noexcept {
         auto node = instance.try_as<DependencyObject>();
         return InSidebarHeader(node,
             [](DependencyObject const& item) { return VisualTreeHelper::GetParent(item); },
-            [](DependencyObject const& item) {
-                auto element = item.try_as<FrameworkElement>();
-                return element ? element.Name() : hstring{};
-            });
+            [](DependencyObject const& item) { return ScopeLabel(item); },
+            [](DependencyObject const& item) { return HeaderPeers(item); });
     } catch (...) { return false; }
 }
 

@@ -32,10 +32,10 @@ int main() {
     Check(dt::Identify(L"SpaceSwitcherButton") == dt::Spaces, "Spaces selector");
     Check(dt::Identify(L"OverflowButton", dt::Family::Button, true) == dt::RecentTabs, "scoped recent-tabs selector");
     Check(dt::IdentifyButton(L"", dt::RecentTabs) == dt::None, "unscoped x:Name cannot match recent tabs");
-    struct Node { const wchar_t* name; Node* parent; };
+    struct Node { const wchar_t* name; Node* parent; bool peers = false; };
     Node root{L"SidebarPresenter", nullptr}, header{L"WindowDragHeader", &root}, button{L"OverflowButton", &header};
     auto inHeader = [](Node* node) {
-        return dt::InSidebarHeader(node, [](Node* item) { return item->parent; }, [](Node* item) { return item->name; });
+        return dt::InSidebarHeader(node, [](Node* item) { return item->parent; }, [](Node* item) { return item->name; }, [](Node* item) { return item->peers; });
     };
     Check(inHeader(&button), "sidebar header ancestry");
     button.parent = &root;
@@ -44,6 +44,14 @@ int main() {
     Check(!inHeader(&button), "unrelated drag header is not enough");
     header.parent = &button;
     Check(!inHeader(&button), "cyclic ancestor walk is bounded");
+    root.name = L"SpacesScrollViewer"; header.name = L""; header.parent = &root; header.peers = true;
+    Check(inHeader(&button), "current unnamed header under SpacesScrollViewer is recognized by peer buttons");
+    header.peers = false;
+    Check(!inHeader(&button), "sidebar container without header peers is not enough");
+    header.peers = true; header.name = L"RowsPanel";
+    Check(!inHeader(&button), "tab content cannot borrow header peers from above");
+    header.name = L""; root.name = L"UnrelatedContainer";
+    Check(!inHeader(&button), "header peers outside sidebar remain excluded");
     Check(dt::HiddenWithToolbar(dt::Chat, dt::Toolbar) &&
           !dt::HiddenWithToolbar(dt::RecentTabs, dt::Toolbar) &&
           !dt::HiddenWithToolbar(dt::Spaces, dt::Toolbar), "toolbar dependency excludes sidebar features");

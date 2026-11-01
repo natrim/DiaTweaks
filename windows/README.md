@@ -18,7 +18,7 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--hide-bookmark` | Windows addition | `BookmarkButton` |
 | `--hide-extensions` | Windows addition | `PinnedExtensionsHost` (contains repeater and overflow) |
 | `--hide-toolbar` | `hideToolbar` (experimental) | `NavigationBarHost` and optional `BookmarksBarHost` |
-| `--hide-recent-tabs` | `hideRecentTabsButton` (sidebar only) | `OverflowButton` within `WindowDragHeader` and `SidebarPresenter` |
+| `--hide-recent-tabs` | `hideRecentTabsButton` (sidebar only) | `OverflowButton` in the sidebar header (named header or App Menu/Spaces peers) |
 | `--hide-spaces` | Windows addition | `SpaceSwitcherButton` |
 | `--unload` / `--detach` | Disconnect the current add-on; keep saved choices | Restore UI, remove Settings handlers, unsubscribe |
 | `--reload` | Disconnect and attach this build with saved choices | New cached DLL copy |
@@ -29,8 +29,12 @@ inspection of Dia `1.5.0.588`, x64, with sidebar tabs. Toolbar hosts were identi
 in the official Windows package's compiled ContentStack layout. Only the navigation
 and bookmarks hosts are targeted; the info-bar host and window caption are preserved.
 Both tab layouts and page layout after collapsing toolbar hosts still need testing.
-The Recent Tabs selector is scoped to the sidebar header using two exact ancestor
-names from the compiled sidebar layout. Generic overflow menus elsewhere are excluded.
+The Recent Tabs selector requires a sidebar container (SpacesScrollViewer or
+SidebarPresenter) and a header below it, identified by WindowDragHeader or the
+App Menu and Spaces peer buttons. Structural names and attached AutomationIds are
+both recognized. Tab-row/content branches and overflow menus elsewhere are excluded.
+Candidates whose header is not connected yet are retried for up to five seconds;
+availability refreshes when the header becomes recognizable.
 Horizontal-tab Recent Tabs is not implemented; its switch is unavailable when no
 matching sidebar header exists. Spaces uses the observed exact button ID.
 No claim is made about layout reflow or hover reveal.

@@ -51,6 +51,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::wstring changeError;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
     HRESULT lastQueryError = S_OK;
+    struct PendingScope { dt::Target named; unsigned attempts = 0; };
+    std::map<InstanceHandle, PendingScope> pendingRecent;
+    static constexpr UINT_PTR ScopeTimer = 0x4454;
     std::map<InstanceHandle, Button> buttons; // Accessed only on SetSite's UI thread.
 
     static DWORD WINAPI Subscribe(void* context) noexcept {
@@ -80,6 +83,8 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (FAILED(hr)) return hr;
         }
         stopping = true;
+        KillTimer(window, ScopeTimer);
+        pendingRecent.clear();
         state = 2;
         AddRef();
         HANDLE thread = CreateThread(nullptr, 0, Unsubscribe, this, 0, nullptr);
@@ -106,6 +111,17 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+        if (msg == WM_TIMER && wp == ScopeTimer) {
+            if (stopping) return 0;
+            auto candidates = pendingRecent;
+            for (auto const& [node, pending] : candidates) {
+                Discover(node, pending.named, dt::Family::Button);
+                auto it = pendingRecent.find(node);
+                if (it != pendingRecent.end() && ++it->second.attempts >= 20) pendingRecent.erase(it);
+            }
+            if (pendingRecent.empty()) KillTimer(hwnd, ScopeTimer);
+            return 0;
+        }
         if (msg == dt::Version) return dt::ProtocolVersion;
         if (msg == dt::State) return state.load();
         if (msg == dt::Detach) return BeginDetach();
@@ -194,6 +210,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::Flags) return flags;
         if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(static_cast<ULONG_PTR>(lp) & 0xffffffffULL), static_cast<dt::Family>((static_cast<ULONG_PTR>(lp) >> 32) & 0xff)); return 0; }
         if (msg == dt::RemoveNode) {
+            pendingRecent.erase(static_cast<InstanceHandle>(wp));
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
                 // Removal from the visual tree is not proof of object destruction.
@@ -340,7 +357,12 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (button.target == dt::None) return;
         if (button.target == dt::RecentTabs) {
             auto object = Instance(node);
-            if (!object || !dt::IsSidebarHeader(object.get())) return;
+            if (!object || !dt::IsSidebarHeader(object.get())) {
+                if (pendingRecent.size() < 32 && pendingRecent.try_emplace(node, PendingScope{namedTarget}).second)
+                    SetTimer(window, ScopeTimer, 250, nullptr);
+                return;
+            }
+            pendingRecent.erase(node);
         }
         if (button.target == namedTarget && (family == dt::Family::Host || !id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         auto [it, inserted] = buttons.emplace(node, button);
