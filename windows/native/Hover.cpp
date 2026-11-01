@@ -13,6 +13,7 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <vector>
 #include <algorithm>
 
@@ -167,8 +168,11 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
                 int index = Grid::GetRow(branch);
                 if (index < 0 || Grid::GetRowSpan(branch) != 1 || static_cast<unsigned>(index) >= grid.RowDefinitions().Size()) return S_OK;
                 for (auto const& child : grid.Children()) {
-                    if (child == branch || child.Visibility() == Visibility::Collapsed) continue;
-                    int first = Grid::GetRow(child), last = first + Grid::GetRowSpan(child);
+                    if (child.Visibility() == Visibility::Collapsed) continue;
+                    auto element = child.try_as<FrameworkElement>();
+                    if (!element) return S_OK;
+                    if (element == branch) continue;
+                    int first = Grid::GetRow(element), last = first + Grid::GetRowSpan(element);
                     if (first <= index && index < last) return S_OK;
                 }
                 auto row = grid.RowDefinitions().GetAt(static_cast<unsigned>(index));
