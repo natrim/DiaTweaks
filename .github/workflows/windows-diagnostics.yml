@@ -1,0 +1,64 @@
+name: Windows port
+
+on:
+  push:
+    branches: [windows-port]
+    paths: ['windows/**', '.github/workflows/windows-diagnostics.yml']
+  pull_request:
+    paths: ['windows/**', '.github/workflows/windows-diagnostics.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build x64 controller, TAP and tests
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          powershell -NoProfile -File windows\Build.ps1
+      - name: Check help and invalid arguments without Dia
+        shell: pwsh
+        run: |
+          & .\windows\build\DiaTweaks.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Help failed.' }
+          & .\windows\build\DiaTweaks.exe --hide-unknown
+          if ($LASTEXITCODE -ne 1) { throw 'Invalid option was not rejected.' }
+          & .\windows\build\DiaTweaks.exe --hide-chat --restore
+          if ($LASTEXITCODE -ne 2) { throw 'Conflicting options were not rejected.' }
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiaTweaks-Windows-x64-experimental
+          path: |
+            windows/build/DiaTweaks.exe
+            windows/build/DiaTweaks.Tap.dll
+            windows/README.md
+  inspect-script:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse script and check missing-app error
+        shell: ${{ matrix.shell }}
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          $script = Join-Path $PWD 'windows/Inspect-Dia.ps1'
+          [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          $output = Join-Path $env:RUNNER_TEMP 'dia-inspection.json'
+          $rejected = $false
+          try { & $script -OutputPath $output }
+          catch {
+            if ($_.Exception.Message -notlike 'No Dia window found.*') { throw }
+            $rejected = $true
+          }
+          if (-not $rejected) { throw 'Expected an explicit error when Dia is not running.' }
+          if (Test-Path $output) { throw 'A failed inspection must not create a report.' }

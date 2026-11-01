@@ -4,6 +4,11 @@ Small tweaks for [Dia](https://www.diabrowser.com) that stay in place when Dia u
 
 Unofficial and not affiliated with The Browser Company. Apple Silicon, macOS 14 or later.
 
+Experimental Windows x64 port: see [windows/README.md](windows/README.md).
+It implements a separate WinUI backend for hiding Chat and sidebar-toggle
+buttons. It still needs validation in a running Windows Dia; the remaining
+macOS tweaks are not ported.
+
 ## Tweaks
 
 Each tweak changes one part of how Dia looks, like the padding around pages or a button in the toolbar. There's also a command, **Group Tabs by Domain**, that groups tabs by site.

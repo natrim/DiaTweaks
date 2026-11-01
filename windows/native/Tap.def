@@ -1,0 +1,4 @@
+LIBRARY DiaTweaks.Tap
+EXPORTS
+    DllGetClassObject
+    DllCanUnloadNow
