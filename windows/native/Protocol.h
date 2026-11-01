@@ -26,7 +26,7 @@ enum FailureField : unsigned { FailureStage, FailureError, FailureMetadata, Fail
 enum Stage : unsigned {
     NoFailure, RegisterTarget, ReadVisibility, VisibilityType, VisibilityPolicy,
     HoldTarget, CreateCollapsed, SetCollapsed, VerifyCollapsed, CreateOriginal,
-    SetOriginal, ClearOriginal, VerifyRestored
+    SetOriginal, ClearOriginal, VerifyRestored, AdjustLayout
 };
 enum Stat : WPARAM {
     Added, Eligible, Inspected, FailedQueries, MissingIds, NamedMatches,

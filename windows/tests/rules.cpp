@@ -63,11 +63,15 @@ int main() {
     Check(hover.Update({true, true, false, false}, 30) && hover.Update({true, true, false, false}, 279), "hide delay prevents edge flicker");
     Check(!hover.Update({true, true, false, false}, 280), "hide after delay");
     Check(hover.Update({true, true, true, false}, 300) && !hover.Update({true, false, true, true}, 301), "inactive window resets reveal");
-    Check(dt::InHoverBand(12, 27, 10, 20, 100, 500, 56, false) &&
-          !dt::InHoverBand(12, 28, 10, 20, 100, 500, 56, false), "eight-DIP hidden trigger");
-    Check(dt::InHoverBand(12, 83, 10, 20, 100, 500, 56, true) &&
-          !dt::InHoverBand(12, 84, 10, 20, 100, 500, 56, true), "revealed toolbar plus bottom margin");
+    Check(dt::InHoverBand(12, 43, 10, 20, 100, 500, 56, false) &&
+          !dt::InHoverBand(12, 44, 10, 20, 100, 500, 56, false), "24-DIP minimum trigger");
+    Check(dt::InHoverBand(12, 91, 10, 20, 100, 500, 56, true) &&
+          !dt::InHoverBand(12, 92, 10, 20, 100, 500, 56, true), "revealed toolbar plus bottom margin");
     Check(!dt::InHoverBand(9, 22, 10, 20, 100, 500, 56, false), "other pane excluded");
+    Check(dt::InHoverBand(12, 90, 10, 20, 100, 500, 56, false, 55) &&
+          !dt::InHoverBand(12, 91, 10, 20, 100, 500, 56, false, 55), "blank strip plus 16-DIP page edge is covered");
+    Check(!dt::InHoverBand(12, 148, 10, 20, 100, 500, 56, false, 1000), "unrelated large page offset cannot create a huge trigger");
+    Check(!dt::InHoverBand(12, 30, 10, 20, 100, 10, 56, false, 55), "trigger stays within pane height");
     unsigned covered = 0;
     for (auto const& tweak : dt::Tweaks) {
         Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");

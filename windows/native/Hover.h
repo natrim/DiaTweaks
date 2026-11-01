@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <algorithm>
 
 namespace dt {
 struct HoverSample { bool ready = false, active = false, pointer = false, focus = false; };
@@ -18,8 +19,11 @@ struct HoverState {
     }
 };
 inline bool InHoverBand(double x, double y, double left, double top, double width,
-                        double paneHeight, double toolbarHeight, bool revealed) {
-    double height = revealed ? toolbarHeight + 8 : 8;
+                        double paneHeight, double toolbarHeight, bool revealed, double pageOffset = 0) {
+    // Cover the reserved blank strip and a small part of the page edge, while
+    // keeping an upper bound if the content has an unrelated large offset.
+    double trigger = (std::max)(24.0, (std::min)(128.0, pageOffset + 16.0));
+    double height = revealed ? toolbarHeight + 16 : trigger;
     if (height > paneHeight) height = paneHeight;
     return width > 0 && height > 0 && x >= left && x < left + width && y >= top && y < top + height;
 }

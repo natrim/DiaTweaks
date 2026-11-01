@@ -8,6 +8,7 @@
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
+#include <winrt/Microsoft.UI.Xaml.Data.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Interop.h>
@@ -21,8 +22,35 @@ using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
 using Microsoft::UI::Xaml::Media::VisualTreeHelper;
 using Windows::Foundation::Rect;
+using Object = Windows::Foundation::IInspectable;
+struct RowLease {
+    weak_ref<RowDefinition> row;
+    Object height{nullptr}, minimum{nullptr};
+    bool ownsHeight = false, ownsMinimum = false;
+    ~RowLease() { Restore(); }
+    HRESULT Restore() noexcept {
+        try {
+            auto definition = row.get();
+            if (!definition) { ownsHeight = ownsMinimum = false; return S_OK; }
+            if (ownsHeight) {
+                auto value = definition.ReadLocalValue(RowDefinition::HeightProperty());
+                if (value.try_as<Windows::Foundation::IReference<GridLength>>() && definition.Height().GridUnitType == GridUnitType::Auto)
+                    definition.SetValue(RowDefinition::HeightProperty(), height);
+                ownsHeight = false;
+            }
+            if (ownsMinimum) {
+                auto value = definition.ReadLocalValue(RowDefinition::MinHeightProperty());
+                if (value.try_as<Windows::Foundation::IReference<double>>() && definition.MinHeight() == 0)
+                    definition.SetValue(RowDefinition::MinHeightProperty(), minimum);
+                ownsMinimum = false;
+            }
+            return S_OK;
+        } catch (...) { return to_hresult(); }
+    }
+};
 struct Region {
-    weak_ref<FrameworkElement> pane, toolbar, bookmarks;
+    weak_ref<FrameworkElement> pane, toolbar, bookmarks, page, owner;
+    std::unique_ptr<RowLease> layout;
     double height = 56;
 };
 FrameworkElement Named(DependencyObject root, wchar_t const* name) {
@@ -67,7 +95,8 @@ std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
         auto hwnd = Microsoft::UI::GetWindowFromWindowId(host.XamlRoot().ContentIslandEnvironment().AppWindowId());
         if (!hwnd || !IsWindow(hwnd)) return {};
         auto region = std::make_shared<Region>();
-        region->pane = pane; region->toolbar = toolbar;
+        region->pane = pane; region->toolbar = toolbar; region->owner = host;
+        region->page = Named(pane, L"VariantHost");
         region->bookmarks = Named(pane, L"BookmarksBarHost");
         if (toolbar.ActualHeight() > 0) region->height = toolbar.ActualHeight();
         return region;
@@ -96,13 +125,16 @@ dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& value, bool re
                 region->height = (std::max)(region->height, static_cast<double>(mark.Y + mark.Height - bounds.Y));
             }
         }
+        double pageOffset = 0;
+        if (auto page = region->page.get(); page && page.ActualHeight() > 0)
+            pageOffset = (std::max)(0.0, static_cast<double>(Bounds(page, content).Y - bounds.Y));
         POINT cursor{};
         if (GetCursorPos(&cursor)) {
             HWND under = GetAncestor(WindowFromPoint(cursor), GA_ROOT);
             if (under == hwnd && ScreenToClient(hwnd, &cursor)) {
                 double scale = root.RasterizationScale();
                 if (scale > 0) sample.pointer = InHoverBand(cursor.x / scale, cursor.y / scale,
-                    bounds.X, bounds.Y, bounds.Width, bounds.Height, region->height, revealed);
+                    bounds.X, bounds.Y, bounds.Width, bounds.Height, region->height, revealed, pageOffset);
             }
         }
         if (revealed) {
@@ -112,4 +144,63 @@ dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& value, bool re
         }
         return sample;
     } catch (...) { return {}; }
+}
+
+HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) noexcept {
+    if (!value) return S_OK;
+    auto region = static_cast<Region*>(value.get());
+    if (!compact) {
+        if (!region->layout) return S_OK;
+        HRESULT hr = region->layout->Restore();
+        if (SUCCEEDED(hr)) region->layout.reset();
+        return hr;
+    }
+    if (region->layout) return S_OK;
+    try {
+        auto host = region->owner.get();
+        if (!host || host.Visibility() != Visibility::Collapsed) return S_OK;
+        FrameworkElement branch = host;
+        for (unsigned depth = 0; depth < 4; ++depth) {
+            auto parent = VisualTreeHelper::GetParent(branch);
+            if (!parent) return S_OK;
+            if (auto grid = parent.try_as<Grid>()) {
+                int index = Grid::GetRow(branch);
+                if (index < 0 || Grid::GetRowSpan(branch) != 1 || static_cast<unsigned>(index) >= grid.RowDefinitions().Size()) return S_OK;
+                for (auto const& child : grid.Children()) {
+                    if (child == branch || child.Visibility() == Visibility::Collapsed) continue;
+                    int first = Grid::GetRow(child), last = first + Grid::GetRowSpan(child);
+                    if (first <= index && index < last) return S_OK;
+                }
+                auto row = grid.RowDefinitions().GetAt(static_cast<unsigned>(index));
+                auto height = row.Height();
+                if (height.GridUnitType != GridUnitType::Pixel && height.GridUnitType != GridUnitType::Auto) return S_OK;
+                bool changeHeight = height.GridUnitType == GridUnitType::Pixel && height.Value > 0;
+                bool changeMinimum = row.MinHeight() > 0;
+                if (!changeHeight && !changeMinimum) return S_OK;
+                auto originalHeight = row.ReadLocalValue(RowDefinition::HeightProperty());
+                auto originalMinimum = row.ReadLocalValue(RowDefinition::MinHeightProperty());
+                // Primitive local values only. Never replace an app binding or
+                // infer a baseline from an evaluated value.
+                if (changeHeight && !originalHeight.try_as<Windows::Foundation::IReference<GridLength>>()) return S_OK;
+                if (changeMinimum && !originalMinimum.try_as<Windows::Foundation::IReference<double>>()) return S_OK;
+                region->layout = std::make_unique<RowLease>();
+                region->layout->row = row;
+                region->layout->height = originalHeight;
+                region->layout->minimum = originalMinimum;
+                if (changeHeight) {
+                    region->layout->ownsHeight = true;
+                    row.Height({1, GridUnitType::Auto});
+                }
+                if (changeMinimum) {
+                    region->layout->ownsMinimum = true;
+                    row.MinHeight(0);
+                }
+                return S_OK;
+            }
+            auto element = parent.try_as<FrameworkElement>();
+            if (!element) return S_OK;
+            branch = element;
+        }
+        return S_OK;
+    } catch (...) { return to_hresult(); }
 }

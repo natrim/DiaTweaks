@@ -107,7 +107,7 @@ void Diagnostics(HWND hwnd) {
     const wchar_t* stages[] = {
         L"none", L"register-target", L"read-visibility", L"visibility-type", L"visibility-policy",
         L"hold-target", L"create-collapsed", L"set-collapsed", L"verify-collapsed", L"create-original",
-        L"set-original", L"clear-original", L"verify-restored"
+        L"set-original", L"clear-original", L"verify-restored", L"toolbar-layout"
     };
     for (auto const& item : dt::NativeTargets) {
         unsigned target = item.flag;

@@ -38,7 +38,13 @@ Candidates whose header is not connected yet are retried for up to five seconds;
 availability refreshes when the header becomes recognizable.
 Horizontal-tab Recent Tabs is not implemented; its switch is unavailable when no
 matching sidebar header exists. Spaces uses the observed exact button ID.
-Hover reveal uses the top eight logical pixels of the content pane, keeps the
+Hover reveal uses at least the top 24 logical pixels of the content pane. It also
+covers the blank strip before VariantHost plus 16 logical pixels of the page,
+with a 128-pixel cap. Dedicated fixed toolbar grid rows are made Auto while hidden
+(and their explicit minimum height removed), then restored before reveal or when
+disabling the option. Shared rows, star-sized rows and bound sizes are left alone.
+The trigger therefore stays usable even where the surrounding native layout
+still reserves space. Hover keeps the
 bar open while the pointer or keyboard focus is in it, and hides after a 250 ms
 pointer-leave delay. Losing the active window hides it immediately. It restores
 only visibility values owned by DiaTweaks, so an already-hidden bookmarks bar

@@ -21,6 +21,7 @@ public:
     FakeElement* parent = nullptr;
     bool headerPeers = false;
     dt::HoverSample hoverSample{true};
+    bool compacted = false, failLayoutRestore = false;
     const wchar_t* name = L"";
     explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -173,6 +174,8 @@ public:
         auto canonical = Resolve(handle);
         if (index != 11 || !nodes.count(canonical) || value >= created.size()) return E_INVALIDARG;
         if (retiredValues.count(value)) { ++staleValueWrites; return E_INVALIDARG; }
+        if (created[static_cast<size_t>(value)] == L"Visible" && elements.count(canonical))
+            Check(!elements.at(canonical)->compacted, "row layout must be restored before showing toolbar");
         if (!ignoreWrites) {
             if (assignedValue[canonical] && assignedValue[canonical] != value) retiredValues.insert(assignedValue[canonical]);
             assignedValue[canonical] = value;
@@ -187,6 +190,8 @@ public:
         if (index != 11 || !nodes.count(canonical)) return E_INVALIDARG;
         if (assignedValue[canonical]) retiredValues.insert(assignedValue[canonical]);
         assignedValue[canonical] = 0;
+        if (nodes.at(canonical).defaultValue == std::wstring_view(L"Visible") && elements.count(canonical))
+            Check(!elements.at(canonical)->compacted, "row layout must be restored before clearing Visibility");
         nodes.at(canonical).value = nodes.at(canonical).defaultValue; nodes.at(canonical).local = false; ++clears;
         ReinsertIfVisible(canonical);
         return S_OK;
@@ -219,6 +224,8 @@ public:
         }
         *out = element; (*out)->AddRef(); return S_OK;
     }
+    bool Compacted(InstanceHandle canonical) const { return elements.at(canonical)->compacted; }
+    void FailLayoutRestore(InstanceHandle canonical, bool fail) { elements.at(canonical)->failLayoutRestore = fail; }
     void Hover(InstanceHandle canonical, dt::HoverSample sample) {
         IInspectable* object = nullptr;
         Check(SUCCEEDED(GetIInspectableFromHandle(canonical, &object)), "hover object");
@@ -253,4 +260,12 @@ inline std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
 }
 inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region, bool) noexcept {
     return region ? static_cast<FakeElement*>(region.get())->hoverSample : HoverSample{};
+}
+
+inline HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& region, bool compact) noexcept {
+    if (!region) return S_OK;
+    auto element = static_cast<FakeElement*>(region.get());
+    if (!compact && element->compacted && element->failLayoutRestore) return E_FAIL;
+    element->compacted = compact;
+    return S_OK;
 }
