@@ -47,7 +47,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     IXamlDiagnostics* diagnostics = nullptr;
     HWND window = nullptr;
     dt::PreferencesStore preferences;
-    unsigned flags = 0;
+    unsigned flags = 0, messageDepth = 0;
     std::wstring changeError;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
     HRESULT lastQueryError = S_OK;
@@ -72,7 +72,8 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return 0;
     }
     HRESULT BeginDetach() {
-        if (state != 1 && state != -2) return HRESULT_FROM_WIN32(ERROR_BUSY);
+        if (messageDepth > 1 || !dt::CanDetachSettings() || (state != 1 && state != -2))
+            return HRESULT_FROM_WIN32(ERROR_BUSY);
         if (!stopping) {
             if (Message(window, dt::Configure, 0, 0) != 0 || Message(window, dt::Active, 0, 0) != 0) return E_FAIL;
             HRESULT hr = dt::DetachSettings();
@@ -93,8 +94,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         }
         if (self) {
-            try { return self->Message(hwnd, msg, wp, lp); }
-            catch (...) { return -1; }
+            self->AddRef();
+            ++self->messageDepth;
+            LRESULT result;
+            try { result = self->Message(hwnd, msg, wp, lp); }
+            catch (...) { result = -1; }
+            --self->messageDepth;
+            self->Release();
+            return result;
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }

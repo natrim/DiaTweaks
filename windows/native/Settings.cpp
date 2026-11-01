@@ -31,6 +31,11 @@ using Microsoft::UI::Xaml::Media::VisualTreeHelper;
 using Microsoft::UI::Xaml::Markup::XamlReader;
 using Object = Windows::Foundation::IInspectable;
 HRESULT lastError = S_OK;
+unsigned settingsDepth = 0;
+struct SettingsCall {
+    SettingsCall() { ++settingsDepth; }
+    ~SettingsCall() { --settingsDepth; }
+};
 
 FrameworkElement Named(NavigationView const& nav, wchar_t const* name) {
     if (auto item = nav.FindName(name).try_as<FrameworkElement>()) return item;
@@ -75,6 +80,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         TryInstall();
     }
     void TryInstall() noexcept {
+        SettingsCall call;
         if (installed || disposed) return;
         auto nav = navigation.get();
         if (!nav) return;
@@ -146,6 +152,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         });
     }
     void Show() noexcept {
+        SettingsCall call;
         try {
             if (showing) { entry.IsChecked(true); return; }
             auto nav = navigation.get();
@@ -184,6 +191,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         }
     }
     void Hide() noexcept {
+        SettingsCall call;
         if (!showing) return;
         showing = false;
         bool wasSyncing = syncing;
@@ -205,6 +213,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         originalVisibility = nullptr; visibilityBinding = nullptr;
     }
     void Refresh() noexcept {
+        SettingsCall call;
         if (!page || disposed) return;
         syncing = true;
         try {
@@ -226,6 +235,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         Write(enabled ? flags | target : flags & ~target);
     }
     void Write(unsigned flags) noexcept {
+        SettingsCall call;
         if (disposed || !showing || syncing) return;
         try {
             HRESULT hr = api.write(api.context, flags);
@@ -239,6 +249,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         } catch (...) { lastError = to_hresult(); Refresh(); }
     }
     void Dispose() noexcept {
+        SettingsCall call;
         if (disposed) return;
         disposed = true; Hide();
         try {
@@ -266,6 +277,7 @@ std::vector<std::shared_ptr<Settings>> settings;
 }
 
 void dt::ObserveSettings(IInspectable* object, SettingsApi api) noexcept {
+    SettingsCall call;
     try {
         Object instance{nullptr};
         copy_from_abi(instance, object);
@@ -281,6 +293,7 @@ void dt::ObserveSettings(IInspectable* object, SettingsApi api) noexcept {
     } catch (...) { lastError = to_hresult(); }
 }
 void dt::RefreshSettings() noexcept {
+    SettingsCall call;
     for (auto const& item : settings) { item->TryInstall(); item->Refresh(); }
 }
 LRESULT dt::SettingsStatus(WPARAM field) noexcept {
@@ -304,7 +317,9 @@ bool dt::IsSidebarHeader(IInspectable* object) noexcept {
     } catch (...) { return false; }
 }
 
+bool dt::CanDetachSettings() noexcept { return settingsDepth == 0; }
 HRESULT dt::DetachSettings() noexcept {
+    if (!CanDetachSettings()) return HRESULT_FROM_WIN32(ERROR_BUSY);
     HRESULT result = S_OK;
     for (auto const& item : settings) {
         item->Dispose();

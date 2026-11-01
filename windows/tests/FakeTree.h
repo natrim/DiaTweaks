@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <vector>
 #include <set>
+#include <functional>
 
 namespace {
 void Check(bool condition, const char* text) { if (!condition) throw std::runtime_error(text); }
@@ -99,6 +100,7 @@ public:
     unsigned staleValueWrites = 0;
     std::atomic<unsigned> unadvises{0};
     std::atomic<bool> failUnadvise{false};
+    std::function<void()> onRead;
     bool ignoreWrites = false;
     bool failRegister = false;
     void Drop(InstanceHandle canonical) {
@@ -142,6 +144,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetPropertyValuesChain(InstanceHandle handle, unsigned* sourceCount,
         PropertyChainSource** sources, unsigned* count, PropertyChainValue** values) override {
         if (GetCurrentThreadId() != uiThread) return RPC_E_WRONG_THREAD;
+        if (onRead) { auto action = std::move(onRead); onRead = {}; action(); }
         auto node = nodes.find(Resolve(handle));
         if (node == nodes.end()) return E_INVALIDARG;
         *sourceCount = 1; *count = node->second.omitVisibility ? 1u : 2u;

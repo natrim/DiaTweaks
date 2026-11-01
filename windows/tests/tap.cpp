@@ -117,6 +117,11 @@ int main() {
         fake->ignoreWrites = false;
         fake->nodes.at(1).omitVisibility = false;
         Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == 0, "own a control before detach");
+        fake->onRead = [&] {
+            Check(FAILED(static_cast<HRESULT>(SendMessageW(hwnd, dt::Detach, 0, 0))), "nested detach is blocked while another controller request runs");
+            Check(fake->unadvises == 0, "nested detach cannot unsubscribe mid-operation");
+        };
+        Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == 0, "original operation completes after blocked nested detach");
         fake->failRegister = true;
         Check(FAILED(static_cast<HRESULT>(SendMessageW(hwnd, dt::Detach, 0, 0))), "failed restoration blocks detach");
         Check(fake->unadvises == 0 && SendMessageW(hwnd, dt::State, 0, 0) == 1, "failed detach keeps subscription available for retry");

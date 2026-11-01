@@ -217,7 +217,7 @@ int wmain(int argc, wchar_t** argv) {
             pid = *processes.begin();
         }
         HWND window = FindTap(pid);
-        if (window && Send(window, dt::Version) != dt::ProtocolVersion)
+        if (window && Send(window, dt::Version) < dt::DetachProtocolVersion)
             throw std::runtime_error("This older session cannot detach. Restart Dia once to install the reload-capable build.");
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
