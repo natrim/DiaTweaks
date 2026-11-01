@@ -3,6 +3,7 @@
 #include "SettingsHost.h"
 #include "SettingsPage.h"
 #include "Rules.h"
+#include "Scope.h"
 // The legacy Win32 GetCurrentTime macro collides with WinUI animation methods.
 #ifdef GetCurrentTime
 #undef GetCurrentTime
@@ -208,7 +209,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
             unsigned flags = api.read(api.context);
             for (auto const& row : rows) {
                 row.toggle.IsOn((flags & row.mask) != 0);
-                bool toolbarHidden = (flags & dt::Toolbar) && !(row.mask & dt::Toolbar);
+                bool toolbarHidden = dt::HiddenWithToolbar(row.mask, flags);
                 bool ready = api.available(api.context, row.required);
                 row.toggle.IsEnabled(ready && !toolbarHidden);
                 row.note.Text(toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
@@ -282,4 +283,18 @@ LRESULT dt::SettingsStatus(WPARAM field) noexcept {
     if (field == SettingsLastError) return lastError;
     if (field == SettingsInstalled) return static_cast<LRESULT>(std::count_if(settings.begin(), settings.end(), [](auto const& item) { return item->installed; }));
     return 0;
+}
+
+bool dt::IsSidebarHeader(IInspectable* object) noexcept {
+    try {
+        Object instance{nullptr};
+        copy_from_abi(instance, object);
+        auto node = instance.try_as<DependencyObject>();
+        return InSidebarHeader(node,
+            [](DependencyObject const& item) { return VisualTreeHelper::GetParent(item); },
+            [](DependencyObject const& item) {
+                auto element = item.try_as<FrameworkElement>();
+                return element ? element.Name() : hstring{};
+            });
+    } catch (...) { return false; }
 }

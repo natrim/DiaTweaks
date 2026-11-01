@@ -1,6 +1,7 @@
 #pragma once
 // In-process mock of XAML diagnostics: no Dia or WinUI installation required.
 #include "../native/Tap.cpp"
+#include "../native/Scope.h"
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -16,6 +17,8 @@ class FakeElement final : public IInspectable {
     std::atomic<ULONG> refs{1};
 public:
     InstanceHandle canonical;
+    FakeElement* parent = nullptr;
+    const wchar_t* name = L"";
     explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
@@ -69,6 +72,7 @@ public:
         const wchar_t* type = L"Microsoft.UI.Xaml.Controls.Button";
         bool omitVisibility = false;
         const wchar_t* defaultValue = L"Visible";
+        InstanceHandle parent = 0;
     };
     std::map<InstanceHandle, Node> nodes{
         {1, {L"", L"Visible", false, false, L"ChatButton"}},
@@ -83,7 +87,13 @@ public:
         {10, {L"PinnedExtensionsOverflowButton", L"Visible", false, false}},
         {11, {L"CustomToolbarAutomationId", L"Visible", false, false, L"NavigationBarHost", L"ContentControl"}},
         {13, {L"PinnedExtensionsRepeater", L"Visible", false, true, L"PinnedExtensionsRepeater", L"ItemsRepeater"}},
-        {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"Grid", false, L"Collapsed"}}
+        {12, {L"", L"Collapsed", false, false, L"BookmarksBarHost", L"Grid", false, L"Collapsed"}},
+        {14, {L"", L"Visible", false, false, L"SidebarPresenter", L"ContentControl"}},
+        {15, {L"", L"Visible", false, false, L"WindowDragHeader", L"Grid", false, L"Visible", 14}},
+        {16, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 15}},
+        {17, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button"}},
+        {18, {L"SpaceSwitcherButton", L"Visible", true, false}},
+        {19, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 14}}
     };
     unsigned clears = 0, writes = 0;
     unsigned staleValueWrites = 0;
@@ -186,7 +196,18 @@ public:
         auto canonical = Resolve(handle);
         if (!nodes.count(canonical)) return E_INVALIDARG;
         if (!elements.count(canonical)) elements.emplace(canonical, Adopt(new FakeElement(canonical)));
-        *out = elements.at(canonical).get(); (*out)->AddRef(); return S_OK;
+        auto element = elements.at(canonical).get();
+        element->name = nodes.at(canonical).name;
+        auto parent = nodes.at(canonical).parent;
+        element->parent = nullptr;
+        if (parent) {
+            IInspectable* ancestor = nullptr;
+            HRESULT hr = GetIInspectableFromHandle(parent, &ancestor);
+            if (FAILED(hr)) return hr;
+            element->parent = static_cast<FakeElement*>(ancestor);
+            ancestor->Release();
+        }
+        *out = element; (*out)->AddRef(); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetHandleFromIInspectable(IInspectable*, InstanceHandle*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE HitTest(RECT, unsigned*, InstanceHandle**) override { return E_NOTIMPL; }
@@ -202,3 +223,9 @@ public:
 };
 }
 
+
+inline bool dt::IsSidebarHeader(IInspectable* object) noexcept {
+    return InSidebarHeader(static_cast<FakeElement*>(object),
+        [](FakeElement* item) { return item->parent; },
+        [](FakeElement* item) { return item->name; });
+}

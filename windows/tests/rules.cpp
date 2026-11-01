@@ -1,6 +1,7 @@
 #include <iostream>
 #include <stdexcept>
 #include "../native/Rules.h"
+#include "../native/Scope.h"
 
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 int main() {
@@ -28,6 +29,24 @@ int main() {
           dt::Identify(L"ChatButton", dt::Family::Host) == dt::None, "selector type boundaries");
     Check(dt::Identify(L"OverflowButton") == dt::None &&
           dt::Identify(L"NavigationChromeHost", dt::Family::Host) == dt::None, "unrelated menu and info-bar parent excluded");
+    Check(dt::Identify(L"SpaceSwitcherButton") == dt::Spaces, "Spaces selector");
+    Check(dt::Identify(L"OverflowButton", dt::Family::Button, true) == dt::RecentTabs, "scoped recent-tabs selector");
+    Check(dt::IdentifyButton(L"", dt::RecentTabs) == dt::None, "unscoped x:Name cannot match recent tabs");
+    struct Node { const wchar_t* name; Node* parent; };
+    Node root{L"SidebarPresenter", nullptr}, header{L"WindowDragHeader", &root}, button{L"OverflowButton", &header};
+    auto inHeader = [](Node* node) {
+        return dt::InSidebarHeader(node, [](Node* item) { return item->parent; }, [](Node* item) { return item->name; });
+    };
+    Check(inHeader(&button), "sidebar header ancestry");
+    button.parent = &root;
+    Check(!inHeader(&button), "sidebar alone is not enough");
+    header.parent = nullptr; button.parent = &header;
+    Check(!inHeader(&button), "unrelated drag header is not enough");
+    header.parent = &button;
+    Check(!inHeader(&button), "cyclic ancestor walk is bounded");
+    Check(dt::HiddenWithToolbar(dt::Chat, dt::Toolbar) &&
+          !dt::HiddenWithToolbar(dt::RecentTabs, dt::Toolbar) &&
+          !dt::HiddenWithToolbar(dt::Spaces, dt::Toolbar), "toolbar dependency excludes sidebar features");
     unsigned covered = 0;
     for (auto const& tweak : dt::Tweaks) {
         Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");

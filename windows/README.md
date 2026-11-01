@@ -2,8 +2,9 @@
 
 This is an initial native Windows implementation, **not a validated port of all
 DiaTweaks features**. Hiding, restoration and repeated hiding have been reported
-working on Windows, including the Settings UI. Saved settings across runs have also been confirmed. The four new switches below
-need on-device confirmation; whole-toolbar hiding is experimental.
+working on Windows, including the Settings UI. Saved settings across runs, toolbar hiding, downloads, bookmark and extensions
+have also been reported working. The new Recent Tabs and Spaces switches need
+on-device confirmation. Whole-toolbar hiding remains experimental.
 The macOS installer and Rust CLI do not manage this backend.
 
 ## Implemented scope
@@ -17,6 +18,8 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--hide-bookmark` | Windows addition | `BookmarkButton` |
 | `--hide-extensions` | Windows addition | `PinnedExtensionsHost` (contains repeater and overflow) |
 | `--hide-toolbar` | `hideToolbar` (experimental) | `NavigationBarHost` and optional `BookmarksBarHost` |
+| `--hide-recent-tabs` | `hideRecentTabsButton` (sidebar only) | `OverflowButton` within `WindowDragHeader` and `SidebarPresenter` |
+| `--hide-spaces` | Windows addition | `SpaceSwitcherButton` |
 | `--restore` | Restore this session's overrides | Saved original properties |
 
 The button and extensions selectors were observed in a complete UI Automation
@@ -24,9 +27,13 @@ inspection of Dia `1.5.0.588`, x64, with sidebar tabs. Toolbar hosts were identi
 in the official Windows package's compiled ContentStack layout. Only the navigation
 and bookmarks hosts are targeted; the info-bar host and window caption are preserved.
 Both tab layouts and page layout after collapsing toolbar hosts still need testing.
+The Recent Tabs selector is scoped to the sidebar header using two exact ancestor
+names from the compiled sidebar layout. Generic overflow menus elsewhere are excluded.
+Horizontal-tab Recent Tabs is not implemented; its switch is unavailable when no
+matching sidebar header exists. Spaces uses the observed exact button ID.
 No claim is made about layout reflow or hover reveal.
 
-Hover reveal, edge-to-edge content, corner shapes, recent tabs,
+Hover reveal, edge-to-edge content, corner shapes, horizontal-tab recent tabs,
 Chats library button, tab grouping, active-window styling
 and automatic attachment after restart/update are not implemented. Dia's
 built-in updater is unchanged. WSL cannot run this backend.
@@ -43,7 +50,8 @@ powershell -NoProfile -File windows\Build.ps1
 This compiles and runs selector-policy tests and a mock XAML service test, then
 builds `windows/build/DiaTweaks.exe` and `windows/build/DiaTweaks.Tap.dll`.
 The mock exercises UI-thread dispatch, matching, property readback, restoration,
-binding preservation and rollback. It also removes hidden visuals, invalidates
+binding preservation and rollback. New checks cover sidebar-header ancestry,
+unrelated overflow menus, high-bit protocol fields and sidebar preferences across sessions. It also removes hidden visuals, invalidates
 their old handles, reintroduces the same object under a new handle, and tests
 failed restoration and retry. It does not simulate the actual WinUI loader.
 It retires replaced boxed values and runs repeated sidebar-only, Chat-only and
@@ -64,9 +72,9 @@ Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
 
 Open Dia's Settings and choose **Patches** at the bottom of its sidebar.
 The page contains switches for the toolbar, Chat, sidebar, downloads, bookmark,
-and extensions, availability notes, and a **Restore defaults** action.
-Whole-toolbar hiding disables individual switches while preserving their saved
-choices. Showing the toolbar again reapplies those choices. Optional bookmarks
+extensions, Recent Tabs and Spaces, availability notes, and a **Restore defaults** action.
+Whole-toolbar hiding disables its child-control switches while preserving their saved
+choices. The Recent Tabs and Spaces sidebar switches remain usable. Showing the toolbar again reapplies those choices. Optional bookmarks
 controls may be absent; they are patched if they appear later.
 Host discovery uses exact x:Names across custom and built-in XAML types. Extensions
 are hidden at their wrapper, leaving the repeater’s app-owned bindings untouched.
@@ -87,7 +95,7 @@ again. `--restore` also saves all switches as off.
 Closing or leaving Patches is read-only: unload-triggered/programmatic switch
 events do not save changes. Only active-page switch actions or explicit CLI
 changes write preferences. After an upgrade, the launcher prints the loaded
-choices for all six switches to help verify restart behavior.
+choices for all eight switches to help verify restart behavior.
 
 When upgrading this experimental build, quit all Dia processes first, then
 replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded
@@ -142,7 +150,8 @@ removes the injected UI and event handlers. Opening a new Settings window adds
 the entry again. Layout detection failures leave Dia's settings intact.
 
 `native/Tap.cpp` subscribes once, queues control handles, and reads/modifies XAML
-properties on the UI thread. Only exact observed AutomationIds match. It changes
+properties on the UI thread. Matching uses exact known AutomationIds or structural host names. The shared
+OverflowButton ID also requires the sidebar-header ancestor scope. It changes
 plain Visibility values and refuses bindings, animations and visual-state
 sources. For restoration it retains a plain local value or clears its override
 to let the original style/default take effect. App-side changes are left alone.

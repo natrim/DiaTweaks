@@ -62,6 +62,8 @@ int main() {
         Check(loaded == dt::All, "fresh backend sees previous run's saved choices");
         Check(second.Send(dt::Configure, static_cast<WPARAM>(loaded)) == 0, "reapply saved choice");
         Check(second.Send(dt::Query, dt::Chat) == 0x10001 && second.Send(dt::Query, dt::Sidebar) == 0x10001, "saved choice hides both controls");
+        Check(second.Send(dt::Query, dt::RecentTabs) == 0x10001 && second.Send(dt::Query, dt::Spaces) == 0x10001,
+              "saved high-bit sidebar choices reapply in a new session");
         Check(Read(app) == dt::All && Read(launcher) == 0, "attachment preserves saved preferences and ignores launcher defaults");
         Check(second.Send(dt::ChangeAndSave, dt::Sidebar) == S_OK && Read(app) == dt::Sidebar, "latest UI change persists");
         Check(second.Send(dt::ChangeAndSave, dt::UnsupportedFlag) < 0 && Read(app) == dt::Sidebar, "rejected setting cannot overwrite saved choice");

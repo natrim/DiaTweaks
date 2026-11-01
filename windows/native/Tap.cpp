@@ -101,8 +101,8 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return 0;
         }
         if (msg == dt::Failure) {
-            auto target = static_cast<unsigned>(wp & 0xff);
-            auto field = static_cast<unsigned>(wp >> 8);
+            auto target = static_cast<unsigned>(wp & 0xffffffffULL);
+            auto field = static_cast<unsigned>(wp >> 32);
             for (const auto& [node, button] : buttons) {
                 (void)node;
                 if (button.target != target || button.failure == dt::NoFailure) continue;
@@ -148,7 +148,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         }
         if (msg == dt::State) return state.load();
         if (msg == dt::Flags) return flags;
-        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(lp & 0xff), static_cast<dt::Family>((lp >> 8) & 0xff)); return 0; }
+        if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(static_cast<ULONG_PTR>(lp) & 0xffffffffULL), static_cast<dt::Family>((static_cast<ULONG_PTR>(lp) >> 32) & 0xff)); return 0; }
         if (msg == dt::RemoveNode) {
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
@@ -292,11 +292,16 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         // Structural hosts are identified by their exact layout x:Name;
         // their separate UIA ID may be customized by Dia.
         button.target = family == dt::Family::Host ? namedTarget :
-            dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget, family);
+            dt::IdentifyButton(id && id->MetadataBits != IsValueNull ? dt::Text(id->Value) : L"", namedTarget, family, true);
         if (button.target == dt::None) return;
+        if (button.target == dt::RecentTabs) {
+            auto object = Instance(node);
+            if (!object || !dt::IsSidebarHeader(object.get())) return;
+        }
         if (button.target == namedTarget && (family == dt::Family::Host || !id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         auto [it, inserted] = buttons.emplace(node, button);
         if (inserted && (flags & button.target)) Apply(node, it->second, true);
+        if (inserted) dt::RefreshSettings();
     }
     bool Apply(InstanceHandle node, Button& button, bool enable) {
         auto fail = [&](dt::Stage stage, HRESULT error) {
@@ -308,6 +313,10 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (button.active && button.instance) {
             HRESULT hr = diagnostics->RegisterInstance(button.instance.get(), &node);
             if (FAILED(hr)) { lastQueryError = hr; return fail(dt::RegisterTarget, hr); }
+        }
+        if (enable && button.target == dt::RecentTabs && !button.detached) {
+            auto object = button.instance ? button.instance : Instance(node);
+            if (!object || !dt::IsSidebarHeader(object.get())) return fail(dt::VisibilityPolicy, E_INVALIDARG);
         }
         dt::Properties p(service, node);
         auto v = p.Find(L"Visibility");
@@ -434,11 +443,11 @@ public:
             if (namedTarget != dt::None) family = dt::Family::Host;
             else {
                 if (!dt::IsButtonType(type)) return S_OK;
-                namedTarget = dt::Identify(dt::Text(element.Name));
+                namedTarget = dt::Identify(dt::Text(element.Name), dt::Family::Button, true);
             }
             ++eligible;
         }
-        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget | (static_cast<LPARAM>(family) << 8)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+        return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget | (static_cast<LPARAM>(family) << 32)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
     }
     ~Tap() {
         if (service) service->Release();

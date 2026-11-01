@@ -75,7 +75,7 @@ void Diagnostics(HWND hwnd) {
     };
     for (auto const& item : dt::NativeTargets) {
         unsigned target = item.flag;
-        auto detail = [&](dt::FailureField field) { return Send(hwnd, dt::Failure, target | (static_cast<WPARAM>(field) << 8)); };
+        auto detail = [&](dt::FailureField field) { return Send(hwnd, dt::Failure, target | (static_cast<WPARAM>(field) << 32)); };
         auto stage = static_cast<unsigned>(detail(dt::FailureStage));
         if (!stage) continue;
         std::wcerr << item.id

@@ -11,6 +11,7 @@ struct SettingsApi {
     HRESULT (*write)(void*, unsigned) = nullptr;
     std::wstring (*failure)(void*) = nullptr;
 };
+bool IsSidebarHeader(IInspectable* object) noexcept;
 enum SettingsField : WPARAM { SettingsCandidates, SettingsInstalled, SettingsLastError };
 #ifdef DT_SETTINGS_UI
 void ObserveSettings(IInspectable* navigationView, SettingsApi api) noexcept;

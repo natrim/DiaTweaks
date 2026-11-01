@@ -7,8 +7,9 @@ Unofficial and not affiliated with The Browser Company. Apple Silicon, macOS 14 
 Experimental Windows x64 port: see [windows/README.md](windows/README.md).
 It implements a separate WinUI backend with a Patches page in Dia's Windows
 Settings. Chat/sidebar hiding, restoration and saved settings have been confirmed
-working on Windows. The latest build adds downloads, bookmark, extensions and
-experimental whole-toolbar hiding; those additions need on-device confirmation.
+working on Windows. Downloads, bookmark, extensions and experimental whole-toolbar hiding have also
+been reported working. The latest build adds sidebar Recent Tabs and Spaces hiding;
+those additions need on-device confirmation.
 The remaining macOS tweaks are not ported.
 
 ## Tweaks

@@ -5,7 +5,7 @@ namespace dt {
 // Keep existing preference bits stable across upgrades.
 enum Target : unsigned {
     None = 0, Chat = 1, Sidebar = 2, Downloads = 4, Bookmark = 8,
-    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128
+    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128, RecentTabs = 256, Spaces = 512
 };
 enum class Family : unsigned { Button, Repeater, Host };
 struct NativeTarget { Target flag; const wchar_t* id; Family family; bool optional; };
@@ -16,13 +16,15 @@ inline constexpr NativeTarget NativeTargets[] = {
     {Bookmark, L"BookmarkButton", Family::Button, false},
     {Extensions, L"PinnedExtensionsHost", Family::Host, false},
     {Toolbar, L"NavigationBarHost", Family::Host, false},
-    {BookmarksBar, L"BookmarksBarHost", Family::Host, true}
+    {BookmarksBar, L"BookmarksBarHost", Family::Host, true},
+    {RecentTabs, L"OverflowButton", Family::Button, false},
+    {Spaces, L"SpaceSwitcherButton", Family::Button, false}
 };
 // Bit 32 remains accepted for preferences written by protocol 7.
 // The host contains both the repeater and its overflow; do not patch those children.
 inline constexpr unsigned ExtensionParts = Extensions | ExtensionsOverflow;
 inline constexpr unsigned ToolbarParts = Toolbar | BookmarksBar;
-inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts;
+inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts | RecentTabs | Spaces;
 inline constexpr unsigned UnsupportedFlag = 1u << 30;
 struct Tweak {
     unsigned mask, required;
@@ -39,10 +41,14 @@ inline constexpr Tweak Tweaks[] = {
     {Downloads, Downloads, L"HideDownloads", L"--hide-downloads", L"Hide downloads button", L"Remove the downloads button from the toolbar."},
     {Bookmark, Bookmark, L"HideBookmark", L"--hide-bookmark", L"Hide bookmark button", L"Remove the bookmark button from the toolbar."},
     {ExtensionParts, Extensions, L"HideExtensions", L"--hide-extensions", L"Hide extensions",
-     L"Hide pinned extension buttons and their overflow button."}
+     L"Hide pinned extension buttons and their overflow button."},
+    {RecentTabs, RecentTabs, L"HideRecentTabs", L"--hide-recent-tabs", L"Hide recent tabs button",
+     L"Remove Recent Tabs from the sidebar header. Sidebar layout only."},
+    {Spaces, Spaces, L"HideSpaces", L"--hide-spaces", L"Hide Spaces button",
+     L"Remove the Spaces switcher button from the sidebar."}
 };
-inline Target Identify(std::wstring_view id, Family family = Family::Button) {
-    for (auto const& item : NativeTargets) if (item.family == family && id == item.id) return item.flag;
+inline Target Identify(std::wstring_view id, Family family = Family::Button, bool sidebarHeader = false) {
+    for (auto const& item : NativeTargets) if ((item.flag != RecentTabs || sidebarHeader) && item.family == family && id == item.id) return item.flag;
     return None;
 }
 inline Target IdentifyHost(std::wstring_view name) { return Identify(name, Family::Host); }
@@ -56,8 +62,13 @@ inline bool IsHostType(std::wstring_view type) {
     return type == L"Microsoft.UI.Xaml.Controls.ContentPresenter" || type == L"ContentPresenter";
 }
 // A nonempty explicit AutomationId takes precedence over x:Name.
-inline Target IdentifyButton(std::wstring_view id, Target namedTarget, Family family = Family::Button) {
-    return id.empty() ? namedTarget : Identify(id, family);
+inline Target IdentifyButton(std::wstring_view id, Target namedTarget, Family family = Family::Button, bool sidebarHeader = false) {
+    if (id.empty()) return namedTarget == RecentTabs && !sidebarHeader ? None : namedTarget;
+    return Identify(id, family, sidebarHeader);
+}
+inline bool HiddenWithToolbar(unsigned target, unsigned flags) {
+    constexpr unsigned toolbarChildren = Chat | Sidebar | Downloads | Bookmark | ExtensionParts;
+    return (flags & Toolbar) && (target & toolbarChildren);
 }
 inline bool IsProperty(std::wstring_view name, std::wstring_view property) {
     return name == property || (name.size() > property.size() &&

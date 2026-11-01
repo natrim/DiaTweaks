@@ -55,22 +55,34 @@ int main() {
             }
         }
         for (unsigned selection : {static_cast<unsigned>(dt::Downloads), static_cast<unsigned>(dt::Bookmark),
-                                   dt::ExtensionParts, dt::ToolbarParts, dt::All}) {
+                                   dt::ExtensionParts, dt::ToolbarParts, static_cast<unsigned>(dt::RecentTabs), static_cast<unsigned>(dt::Spaces), dt::All}) {
             for (unsigned cycle = 0; cycle < 3; ++cycle) {
                 Check(SendMessageW(hwnd, dt::Configure, selection, 0) == 0, "new tweak applies repeatedly");
                 for (auto const& item : dt::NativeTargets) if (selection & item.flag)
                     Check(SendMessageW(hwnd, dt::Query, item.flag, 0) == 0x10001, "custom hosts match exact layout names, regardless of runtime type or UIA ID");
                 Check(fake->nodes.at(3).value == L"Visible", "window caption untouched");
+                Check(fake->nodes.at(17).value == L"Visible" && fake->nodes.at(19).value == L"Visible",
+                      "overflow menus outside the sidebar header stay visible");
                 Check(fake->nodes.at(13).value == L"Visible" && fake->nodes.at(13).binding,
                       "extensions host hides bound repeater without replacing its binding");
                 Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "new tweaks restore");
                 Pump();
-                for (auto handle : {7ull, 8ull, 9ull, 10ull, 11ull})
+                for (auto handle : {7ull, 8ull, 9ull, 10ull, 11ull, 16ull, 18ull})
                     Check(fake->nodes.at(handle).value == L"Visible", "new target baseline restored");
                 Check(fake->nodes.at(12).value == L"Collapsed" && !fake->nodes.at(12).local,
                       "originally hidden bookmarks bar stays hidden and unowned");
             }
         }
+        Check(SendMessageW(hwnd, dt::Query, dt::RecentTabs, 0) == 1, "only the scoped recent-tabs button is tracked");
+        Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == 0, "high-bit Spaces target applies");
+        Check(fake->nodes.at(18).value == L"Collapsed", "message packing preserves target bits above 255");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "Spaces restored");
+        fake->nodes.at(18).binding = true;
+        Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == -1, "high-bit policy failure reported");
+        Check(SendMessageW(hwnd, dt::Failure, dt::Spaces | (static_cast<WPARAM>(dt::FailureStage) << 32), 0) == dt::VisibilityPolicy,
+              "failure protocol preserves high-bit target and field");
+        fake->nodes.at(18).binding = false;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "clear failed selection");
         Check(fake->staleValueWrites == 0, "no cached value handles reused across cycles");
         Check(SendMessageW(hwnd, dt::Configure, dt::Chat, 0) == 0, "hide before handle replacement");
         fake->Drop(1); Pump();
