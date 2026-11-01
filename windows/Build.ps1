@@ -12,7 +12,7 @@ $output = Join-Path $PSScriptRoot 'build'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 Push-Location $output
 try {
-    $common = @('/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', '/O2', '/MT', '/utf-8', '/bigobj', '/DUNICODE', '/D_UNICODE', '/D_WIN32_WINNT=0x0A00')
+    $common = @('/nologo', '/std:c++20', '/EHsc', '/W4', '/WX', '/O2', '/MT', '/utf-8', '/bigobj', '/DUNICODE', '/D_UNICODE', '/D_WIN32_WINNT=0x0A00')
     & cl.exe @common (Join-Path $PSScriptRoot 'tests/rules.cpp') /Fe:rules.exe
     if ($LASTEXITCODE) { throw 'Policy test compilation failed.' }
     & .\rules.exe

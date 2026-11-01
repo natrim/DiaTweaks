@@ -3,6 +3,10 @@
 #include "SettingsHost.h"
 #include "SettingsPage.h"
 #include "Rules.h"
+// The legacy Win32 GetCurrentTime macro collides with WinUI animation methods.
+#ifdef GetCurrentTime
+#undef GetCurrentTime
+#endif
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
@@ -43,7 +47,8 @@ struct Settings : std::enable_shared_from_this<Settings> {
     dt::SettingsApi api;
     bool installed = false, showing = false, syncing = false, disposed = false;
     event_token loaded{}, unloaded{}, invoked{}, selected{};
-    Object originalFooter{nullptr}, originalVisibility{nullptr};
+    UIElement originalFooter{nullptr};
+    Object originalVisibility{nullptr};
     Microsoft::UI::Xaml::Data::Binding visibilityBinding{nullptr};
     StackPanel footer{nullptr};
     ToggleButton entry{nullptr};
