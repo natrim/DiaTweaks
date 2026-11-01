@@ -40,25 +40,11 @@ jobs:
             windows/README.md
   inspect-script:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
-      - name: Parse script and check missing-app error
-        shell: ${{ matrix.shell }}
-        run: |
-          $tokens = $null
-          $parseErrors = $null
-          $script = Join-Path $PWD 'windows/Inspect-Dia.ps1'
-          [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$parseErrors)
-          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
-          $output = Join-Path $env:RUNNER_TEMP 'dia-inspection.json'
-          $rejected = $false
-          try { & $script -OutputPath $output }
-          catch {
-            if ($_.Exception.Message -notlike 'No Dia window found.*') { throw }
-            $rejected = $true
-          }
-          if (-not $rejected) { throw 'Expected an explicit error when Dia is not running.' }
-          if (Test-Path $output) { throw 'A failed inspection must not create a report.' }
+      - name: Inspect diagnostic in Windows PowerShell 5.1
+        shell: powershell
+        run: .\windows\tests\inspect.ps1
+      - name: Inspect diagnostic in PowerShell 7
+        shell: pwsh
+        run: .\windows\tests\inspect.ps1
