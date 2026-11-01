@@ -124,10 +124,10 @@ struct Settings : std::enable_shared_from_this<Settings> {
         sidebarUnavailable = page.FindName(L"SidebarUnavailable").as<TextBlock>();
         auto weak = weak_from_this();
         chat.Toggled([weak](Object const&, RoutedEventArgs const&) {
-            if (auto self = weak.lock(); self && !self->syncing) self->Change(dt::Chat, self->chat.IsOn());
+            if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing) self->Change(dt::Chat, self->chat.IsOn());
         });
         sidebar.Toggled([weak](Object const&, RoutedEventArgs const&) {
-            if (auto self = weak.lock(); self && !self->syncing) self->Change(dt::Sidebar, self->sidebar.IsOn());
+            if (auto self = weak.lock(); self && self->showing && !self->disposed && !self->syncing) self->Change(dt::Sidebar, self->sidebar.IsOn());
         });
         page.FindName(L"RestoreButtons").as<Button>().Click([weak](Object const&, RoutedEventArgs const&) {
             if (auto self = weak.lock()) self->Write(0);
@@ -173,6 +173,9 @@ struct Settings : std::enable_shared_from_this<Settings> {
     }
     void Hide() noexcept {
         if (!showing) return;
+        showing = false;
+        bool wasSyncing = syncing;
+        syncing = true;
         try {
             if (auto parent = overlayParent.get()) {
                 uint32_t index = 0;
@@ -185,7 +188,8 @@ struct Settings : std::enable_shared_from_this<Settings> {
             }
             if (entry) entry.IsChecked(false);
         } catch (...) { lastError = to_hresult(); }
-        showing = false; overlayParent = {}; hiddenBranch = {};
+        syncing = wasSyncing;
+        overlayParent = {}; hiddenBranch = {};
         originalVisibility = nullptr; visibilityBinding = nullptr;
     }
     void Refresh() noexcept {
@@ -207,6 +211,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
         Write(enabled ? flags | target : flags & ~target);
     }
     void Write(unsigned flags) noexcept {
+        if (disposed || !showing || syncing) return;
         try {
             HRESULT hr = api.write(api.context, flags);
             Refresh();
@@ -216,7 +221,7 @@ struct Settings : std::enable_shared_from_this<Settings> {
     }
     void Dispose() noexcept {
         if (disposed) return;
-        Hide(); disposed = true;
+        disposed = true; Hide();
         try {
             if (auto nav = navigation.get()) {
                 nav.Loaded(loaded); nav.Unloaded(unloaded);

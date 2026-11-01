@@ -6,9 +6,8 @@ Unofficial and not affiliated with The Browser Company. Apple Silicon, macOS 14 
 
 Experimental Windows x64 port: see [windows/README.md](windows/README.md).
 It implements a separate WinUI backend for hiding Chat and sidebar-toggle
-buttons, plus a Patches page in Dia's Windows Settings. The settings-page UI
-still needs validation in a running Windows Dia; the remaining macOS tweaks
-are not ported.
+buttons, plus a Patches page in Dia's Windows Settings. These controls have been
+confirmed working on Windows. The remaining macOS tweaks are not ported.
 
 ## Tweaks
 

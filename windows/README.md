@@ -2,7 +2,8 @@
 
 This is an initial native Windows implementation, **not a validated port of all
 DiaTweaks features**. Hiding, restoration and repeated hiding have been reported
-working on Windows. The new Settings UI still needs validation in a running Dia.
+working on Windows, including the Settings UI. The latest persistence fix still
+needs confirmation across a real Dia restart.
 The macOS installer and Rust CLI do not manage this backend.
 
 ## Implemented scope
@@ -42,6 +43,10 @@ failed restoration and retry. It does not simulate the actual WinUI loader.
 It retires replaced boxed values and runs repeated sidebar-only, Chat-only and
 combined hide/restore cycles, checking both button visibility and ownership.
 The Windows workflow runs these checks and uploads those two output files.
+Persistence tests use disposable registry keys to model different launcher and
+Dia registry views, save through the real Settings IPC path, and load the saved
+choice into fresh backend sessions. They also check invalid data and types,
+explicit restoration to off, and that reading defaults never writes them back.
 
 ## Run
 
@@ -58,10 +63,19 @@ and follow CLI changes. The page uses WinUI controls and Dia's theme resources.
 Choosing one of Dia's own categories returns to its original content.
 
 Selections are saved under `HKCU\Software\DiaTweaks`, value `WindowsFlags`.
+All preference I/O runs inside Dia, including reads requested by the launcher,
+so the reader and writer use the same package/registry view. Startup reads the
+selection after attaching and never saves defaults over it. A missing value
+means off; other read errors stop attachment configuration without overwriting
+the stored selection. A successful write is read back before reporting saved.
 Run `--settings` again after restarting/updating Dia to attach the add-on and
 apply that saved selection. No startup task, service or persistent DLL injection
 is installed. A normal Dia restart clears in-memory UI changes until attaching
 again. `--restore` also saves both switches as off.
+Closing or leaving Patches is read-only: unload-triggered/programmatic switch
+events do not save changes. Only active-page switch actions or explicit CLI
+changes write preferences. After an upgrade, the launcher prints the loaded
+`hide-chat` and `hide-sidebar` choices to help verify restart behavior.
 
 When upgrading this experimental build, quit all Dia processes first, then
 replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded

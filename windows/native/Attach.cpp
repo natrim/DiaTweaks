@@ -11,7 +11,6 @@
 #include <vector>
 #include "Protocol.h"
 #include "Rules.h"
-#include "Preferences.h"
 #include "SettingsHost.h"
 
 namespace fs = std::filesystem;
@@ -168,7 +167,6 @@ int wmain(int argc, wchar_t** argv) {
             } else throw std::runtime_error("Unknown or incomplete argument. Run with --help.");
         }
         if ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))) { Help(); return 2; }
-        if (settingsUi) flags = dt::LoadPreferences();
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
         if (!pid) {
@@ -179,10 +177,6 @@ int wmain(int argc, wchar_t** argv) {
         HWND window = FindTap(pid);
         if (window && Send(window, dt::Version) != dt::ProtocolVersion)
             throw std::runtime_error("An older DiaTweaks DLL is still loaded. Quit all Dia processes, replace both the EXE and DLL, then reopen Dia.");
-        if (!window && restore) {
-            if (FAILED(dt::SavePreferences(0))) throw std::runtime_error("Could not clear saved tweak preferences.");
-            std::wcout << L"No DiaTweaks session is attached. Saved tweaks are off.\n"; return 0;
-        }
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
         struct Com { ~Com() { CoUninitialize(); } } comScope;
@@ -209,6 +203,16 @@ int wmain(int argc, wchar_t** argv) {
             throw std::runtime_error("The XAML tree subscription did not become ready. Restart Dia before retrying.");
         if (Send(window, dt::Version) != dt::ProtocolVersion)
             throw std::runtime_error("EXE and DLL versions differ. Quit Dia and replace both files together.");
+        if (settingsUi) {
+            // Read from the same process/package view that saves UI changes.
+            // Never turn a failed read into defaults and overwrite the store.
+            LRESULT saved = Send(window, dt::LoadSelection);
+            if (saved < 0 || (static_cast<unsigned long long>(saved) & ~static_cast<unsigned long long>(dt::All)))
+                throw std::runtime_error("Could not read Dia's saved preferences. No selection was changed or saved.");
+            flags = static_cast<unsigned>(saved);
+            std::wcout << L"Loaded saved selection: hide-chat=" << ((flags & dt::Chat) != 0)
+                       << L", hide-sidebar=" << ((flags & dt::Sidebar) != 0) << L'\n';
+        }
         // Posted replay notifications may still be pending when Advise returns.
         if (!restore) {
             ULONGLONG deadline = GetTickCount64() + 5000;
@@ -255,10 +259,12 @@ int wmain(int argc, wchar_t** argv) {
             Diagnostics(window);
             return 1;
         }
-        HRESULT saved = static_cast<HRESULT>(Send(window, dt::SaveSelection));
-        if (FAILED(saved)) {
-            std::wcerr << L"Changes applied for this session, but preferences could not be saved.\n";
-            return 1;
+        if (!settingsUi) {
+            HRESULT saved = static_cast<HRESULT>(Send(window, dt::SaveSelection));
+            if (FAILED(saved)) {
+                std::wcerr << L"Changes applied for this session, but preferences could not be saved.\n";
+                return 1;
+            }
         }
         if (settingsUi) {
             std::wcout << L"Settings integration attached. Open Dia Settings and choose Patches.\n"

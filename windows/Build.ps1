@@ -21,6 +21,10 @@ try {
     if ($LASTEXITCODE) { throw 'Mock TAP test compilation failed.' }
     & .\tap-tests.exe
     if ($LASTEXITCODE) { throw 'Mock TAP tests failed.' }
+    & cl.exe @common (Join-Path $PSScriptRoot 'tests/persistence.cpp') /Fe:persistence-tests.exe /link ole32.lib oleaut32.lib user32.lib advapi32.lib
+    if ($LASTEXITCODE) { throw 'Persistence test compilation failed.' }
+    & .\persistence-tests.exe
+    if ($LASTEXITCODE) { throw 'Persistence tests failed.' }
     $headers = & (Join-Path $PSScriptRoot 'Prepare-WinUI.ps1') -OutputDirectory $output
     # The preparation script writes tool output too; its last output is the path.
     $headers = @($headers)[-1]

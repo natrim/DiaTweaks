@@ -45,6 +45,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     IVisualTreeService* service = nullptr;
     IXamlDiagnostics* diagnostics = nullptr;
     HWND window = nullptr;
+    dt::PreferencesStore preferences;
     unsigned flags = 0;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
     HRESULT lastQueryError = S_OK;
@@ -74,7 +75,13 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == dt::Version) return dt::ProtocolVersion;
         if (msg == dt::SettingsState) return dt::SettingsStatus(wp);
-        if (msg == dt::SaveSelection) return dt::SavePreferences(flags);
+        if (msg == dt::SaveSelection) return preferences.Write(flags);
+        if (msg == dt::LoadSelection) {
+            unsigned saved = 0;
+            HRESULT hr = preferences.Read(saved);
+            return FAILED(hr) ? static_cast<LRESULT>(hr) : static_cast<LRESULT>(saved);
+        }
+        if (msg == dt::ChangeAndSave) return ChangeFromSettings(static_cast<unsigned>(wp));
         if (msg == dt::SettingsNode) {
             auto object = Instance(static_cast<InstanceHandle>(wp));
             if (object) dt::ObserveSettings(object.get(), {
@@ -84,7 +91,10 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                     auto self = static_cast<Tap*>(context);
                     return (self->Message(self->window, dt::Query, target, 0) & 0xffff) != 0 || self->Message(self->window, dt::Active, target, 0) != 0;
                 },
-                [](void* context, unsigned selection) { return static_cast<Tap*>(context)->ChangeFromSettings(selection); }
+                [](void* context, unsigned selection) {
+                    auto self = static_cast<Tap*>(context);
+                    return static_cast<HRESULT>(self->Message(self->window, dt::ChangeAndSave, selection, 0));
+                }
             });
             return 0;
         }
@@ -197,7 +207,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             auto counts = static_cast<unsigned>(Message(window, dt::Query, target, 0));
             applied = applied && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
         }
-        HRESULT hr = applied ? dt::SavePreferences(selection) : E_FAIL;
+        HRESULT hr = applied ? preferences.Write(selection) : E_FAIL;
         if (FAILED(hr)) Message(window, dt::Configure, previous, 0);
         return hr;
     }
@@ -327,6 +337,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return hr;
     }
 public:
+    explicit Tap(dt::PreferencesStore store = {}) : preferences(store) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) noexcept override {
         if (!out) return E_POINTER;
         *out = nullptr;
