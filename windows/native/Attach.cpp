@@ -11,6 +11,8 @@
 #include <vector>
 #include "Protocol.h"
 #include "Rules.h"
+#include "Preferences.h"
+#include "SettingsHost.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -135,8 +137,10 @@ HRESULT Attach(DWORD pid, const fs::path& tap) {
 }
 void Help() {
     std::wcout << L"DiaTweaks for Windows (experimental, x64)\n"
+               << L"  DiaTweaks.exe --settings [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --hide-chat [--hide-sidebar] [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --restore [--pid NUMBER]\n"
+               << L"With no arguments, attach the Settings UI and apply saved preferences.\n"
                << L"Each command replaces the active selection. Restart Dia to unload the add-on.\n";
 }
 }
@@ -146,12 +150,14 @@ int wmain(int argc, wchar_t** argv) {
         unsigned flags = 0;
         DWORD pid = 0;
         bool restore = false;
+        bool settingsUi = argc == 1;
         for (int i = 1; i < argc; ++i) {
             std::wstring arg(argv[i]);
             if (arg == L"--help" || arg == L"-h") { Help(); return 0; }
             if (arg == L"--hide-chat") flags |= dt::Chat;
             else if (arg == L"--hide-sidebar") flags |= dt::Sidebar;
             else if (arg == L"--restore") restore = true;
+            else if (arg == L"--settings") settingsUi = true;
             else if (arg == L"--pid" && i + 1 < argc) {
                 std::wstring text(argv[++i]);
                 if (text.empty() || text.find_first_not_of(L"0123456789") != std::wstring::npos)
@@ -161,7 +167,8 @@ int wmain(int argc, wchar_t** argv) {
                 pid = static_cast<DWORD>(number);
             } else throw std::runtime_error("Unknown or incomplete argument. Run with --help.");
         }
-        if ((!flags && !restore) || (flags && restore)) { Help(); return 2; }
+        if ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))) { Help(); return 2; }
+        if (settingsUi) flags = dt::LoadPreferences();
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
         if (!pid) {
@@ -172,7 +179,10 @@ int wmain(int argc, wchar_t** argv) {
         HWND window = FindTap(pid);
         if (window && Send(window, dt::Version) != dt::ProtocolVersion)
             throw std::runtime_error("An older DiaTweaks DLL is still loaded. Quit all Dia processes, replace both the EXE and DLL, then reopen Dia.");
-        if (!window && restore) { std::wcout << L"No DiaTweaks session is attached.\n"; return 0; }
+        if (!window && restore) {
+            if (FAILED(dt::SavePreferences(0))) throw std::runtime_error("Could not clear saved tweak preferences.");
+            std::wcout << L"No DiaTweaks session is attached. Saved tweaks are off.\n"; return 0;
+        }
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
         struct Com { ~Com() { CoUninitialize(); } } comScope;
@@ -244,6 +254,18 @@ int wmain(int argc, wchar_t** argv) {
                        << (rolledBack ? L"Previous selection restored.\n" : L"Restart Dia to restore its UI.\n");
             Diagnostics(window);
             return 1;
+        }
+        HRESULT saved = static_cast<HRESULT>(Send(window, dt::SaveSelection));
+        if (FAILED(saved)) {
+            std::wcerr << L"Changes applied for this session, but preferences could not be saved.\n";
+            return 1;
+        }
+        if (settingsUi) {
+            std::wcout << L"Settings integration attached. Open Dia Settings and choose Patches.\n"
+                       << L"Settings: candidates=" << Send(window, dt::SettingsState, dt::SettingsCandidates)
+                       << L", installed=" << Send(window, dt::SettingsState, dt::SettingsInstalled)
+                       << L", lastError=0x" << std::hex << static_cast<unsigned long>(Send(window, dt::SettingsState, dt::SettingsLastError)) << std::dec << L'\n';
+            return 0;
         }
         std::wcout << (restore ? (restoring ? L"Owned overrides removed and restored button visibility verified.\n" : L"No owned visibility overrides remain.\n")
                               : L"Requested button visibility verified through XAML diagnostics.\n");

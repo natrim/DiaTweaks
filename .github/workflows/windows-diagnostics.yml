@@ -48,3 +48,6 @@ jobs:
       - name: Inspect diagnostic in PowerShell 7
         shell: pwsh
         run: .\windows\tests\inspect.ps1
+      - name: Validate settings XAML
+        shell: pwsh
+        run: .\windows\tests\settings.ps1

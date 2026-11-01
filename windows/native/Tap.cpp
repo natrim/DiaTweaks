@@ -9,6 +9,8 @@
 #include <new>
 #include "Properties.h"
 #include "Protocol.h"
+#include "SettingsHost.h"
+#include "Preferences.h"
 
 namespace {
 HINSTANCE module;
@@ -71,6 +73,21 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == dt::Version) return dt::ProtocolVersion;
+        if (msg == dt::SettingsState) return dt::SettingsStatus(wp);
+        if (msg == dt::SaveSelection) return dt::SavePreferences(flags);
+        if (msg == dt::SettingsNode) {
+            auto object = Instance(static_cast<InstanceHandle>(wp));
+            if (object) dt::ObserveSettings(object.get(), {
+                this,
+                [](void* context) { return static_cast<Tap*>(context)->flags; },
+                [](void* context, unsigned target) {
+                    auto self = static_cast<Tap*>(context);
+                    return (self->Message(self->window, dt::Query, target, 0) & 0xffff) != 0 || self->Message(self->window, dt::Active, target, 0) != 0;
+                },
+                [](void* context, unsigned selection) { return static_cast<Tap*>(context)->ChangeFromSettings(selection); }
+            });
+            return 0;
+        }
         if (msg == dt::Failure) {
             auto target = static_cast<unsigned>(wp & 0xff);
             auto field = static_cast<unsigned>(wp >> 8);
@@ -141,6 +158,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 if (it->second.detached && !it->second.active) it = buttons.erase(it);
                 else ++it;
             }
+            dt::RefreshSettings();
             return failures ? -1 : 0;
         }
         if (msg == dt::Active) {
@@ -171,6 +189,17 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return static_cast<LRESULT>((hidden << 16) | matched);
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    HRESULT ChangeFromSettings(unsigned selection) {
+        unsigned previous = flags;
+        bool applied = Message(window, dt::Configure, selection, 0) == 0;
+        for (unsigned target : {dt::Chat, dt::Sidebar}) if (selection & target) {
+            auto counts = static_cast<unsigned>(Message(window, dt::Query, target, 0));
+            applied = applied && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
+        }
+        HRESULT hr = applied ? dt::SavePreferences(selection) : E_FAIL;
+        if (FAILED(hr)) Message(window, dt::Configure, previous, 0);
+        return hr;
     }
     std::shared_ptr<IInspectable> Instance(InstanceHandle node) {
         IInspectable* instance = nullptr;
@@ -347,6 +376,9 @@ public:
         dt::Target namedTarget = dt::None;
         if (mutation == Add) {
             ++added;
+            auto type = dt::Text(element.Type);
+            if (type == L"Microsoft.UI.Xaml.Controls.NavigationView" || type == L"NavigationView")
+                return PostMessageW(window, dt::SettingsNode, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
             if (!dt::IsButtonType(dt::Text(element.Type))) return S_OK;
             ++eligible;
             namedTarget = dt::Identify(dt::Text(element.Name));

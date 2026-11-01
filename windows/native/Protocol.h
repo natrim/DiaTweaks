@@ -9,7 +9,8 @@ inline constexpr UINT Query = WM_APP + 5, Flags = WM_APP + 6, Active = WM_APP + 
 inline constexpr UINT Version = WM_APP + 8, Stats = WM_APP + 9;
 inline constexpr UINT OwnedMask = WM_APP + 10, QueryVisible = WM_APP + 11;
 inline constexpr UINT Failure = WM_APP + 12;
-inline constexpr LRESULT ProtocolVersion = 4;
+inline constexpr UINT SettingsNode = WM_APP + 13, SettingsState = WM_APP + 14, SaveSelection = WM_APP + 15;
+inline constexpr LRESULT ProtocolVersion = 5;
 enum FailureField : unsigned { FailureStage, FailureError, FailureMetadata, FailureSource };
 enum Stage : unsigned {
     NoFailure, RegisterTarget, ReadVisibility, VisibilityType, VisibilityPolicy,

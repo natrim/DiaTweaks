@@ -1,32 +1,33 @@
 # DiaTweaks for Windows (experimental, x64)
 
 This is an initial native Windows implementation, **not a validated port of all
-DiaTweaks features**. It has been cross-compiled for Windows; runtime testing in
-Dia is still required. The macOS installer and Rust CLI do not manage this backend.
+DiaTweaks features**. Hiding, restoration and repeated hiding have been reported
+working on Windows. The new Settings UI still needs validation in a running Dia.
+The macOS installer and Rust CLI do not manage this backend.
 
 ## Implemented scope
 
 | Windows switch | Upstream tweak | Selector |
 | --- | --- | --- |
+| `--settings` (or no arguments) | Settings UI and saved selection | Dia Settings → Patches |
 | `--hide-chat` | `hideChatButton` | `ChatButton` |
 | `--hide-sidebar` | `hideSidebarButton` | `SidebarToggleButton` |
 | `--restore` | Restore this session's button overrides | Saved original properties |
 
 Selectors were observed in a complete UI Automation inspection of Dia
 `1.5.0.588`, x64, with sidebar tabs. That inspection establishes the controls'
-identifiers, not a successful patch test. XAML property enumeration, diagnostics
-attachment, both tab layouts and page layout after collapsing a button still
-need testing on Windows. No claim is made about layout reflow.
+identifiers. The settings layout, both tab layouts and page layout after
+collapsing a button still need testing on Windows. No claim is made about layout reflow.
 
 The toolbar, hover reveal, edge-to-edge content, corner shapes, recent tabs,
-Chats library button, tab grouping, active-window styling, Settings integration
-and automatic reapplication after restart/update are not implemented. Dia's
+Chats library button, tab grouping, active-window styling
+and automatic attachment after restart/update are not implemented. Dia's
 built-in updater is unchanged. WSL cannot run this backend.
 
 ## Build
 
 Use Visual Studio Build Tools with **Desktop development with C++** and the
-Windows SDK. In an **x64 Native Tools Command Prompt**, from the repository root:
+Windows SDK, plus the NuGet CLI. In an **x64 Native Tools Command Prompt**, from the repository root:
 
 ```bat
 powershell -NoProfile -File windows\Build.ps1
@@ -47,8 +48,20 @@ The Windows workflow runs these checks and uploads those two output files.
 Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
 
 ```powershell
-.\DiaTweaks.exe --hide-chat --hide-sidebar
+.\DiaTweaks.exe --settings
 ```
+
+Open Dia's Settings and choose **Patches** at the bottom of its sidebar.
+The page contains **Hide Chat button** and **Hide sidebar button** switches,
+availability notes, and a **Restore buttons** action. Switches apply immediately
+and follow CLI changes. The page uses WinUI controls and Dia's theme resources.
+Choosing one of Dia's own categories returns to its original content.
+
+Selections are saved under `HKCU\Software\DiaTweaks`, value `WindowsFlags`.
+Run `--settings` again after restarting/updating Dia to attach the add-on and
+apply that saved selection. No startup task, service or persistent DLL injection
+is installed. A normal Dia restart clears in-memory UI changes until attaching
+again. `--restore` also saves both switches as off.
 
 When upgrading this experimental build, quit all Dia processes first, then
 replace **both** the EXE and DLL before reopening Dia. The old DLL stays loaded
@@ -81,8 +94,7 @@ made a control visible; an app-side binding or a missing visual is reported
 without claiming verified restoration. Controls hidden by Dia before attaching
 are not forced visible.
 
-Nothing is installed persistently or started at login. Run the command again
-after restarting or updating Dia. When several Dia processes have browser
+When several Dia processes have browser
 windows, select one with `--pid NUMBER`. The controller refuses arbitrary
 processes and non-x64 targets. ARM64 Dia is not supported.
 
@@ -90,8 +102,18 @@ processes and non-x64 targets. ARM64 Dia is not supported.
 
 `native/Attach.cpp` discovers the running Dia's WinUI runtime and uses
 `InitializeXamlDiagnosticsEx` to load our COM TAP DLL. The TAP uses the Windows
-SDK's XAML diagnostics interfaces, so the build does not need a guessed WinUI
-NuGet version or hardcoded addresses in Dia.dll.
+SDK's XAML diagnostics interfaces. The settings-page build generates C++/WinRT
+projections from the pinned Microsoft.WindowsAppSDK.WinUI 1.8.250906003 package.
+The running Dia supplies WinUI's runtime; its libraries are not shipped in the
+artifact, and there are no hardcoded addresses in Dia.dll.
+
+`native/Settings.cpp` recognizes the NavigationView in Dia's Windows settings
+layout by `PaneTitleText` and `ManagedBannerBorder`. It adds a Patches button to
+the pane footer without modifying Dia's item source or selecting an unknown
+native route. The page temporarily overlays the content area and restores the
+original branch visibility/binding when leaving Patches. Closing Settings
+removes the injected UI and event handlers. Opening a new Settings window adds
+the entry again. Layout detection failures leave Dia's settings intact.
 
 `native/Tap.cpp` subscribes once, queues button handles, and reads/modifies XAML
 properties on the UI thread. Only exact observed AutomationIds match. It changes
