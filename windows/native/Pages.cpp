@@ -48,7 +48,7 @@ struct Lease {
         } catch (...) { return to_hresult(); }
     }
 };
-struct Page {
+struct PageFrame {
     unsigned long long id;
     weak_ref<FrameworkElement> host, pane;
     std::vector<Lease> leases;
@@ -59,7 +59,7 @@ struct Page {
 };
 struct State {
     dt::PageApi api;
-    std::vector<Page> pages;
+    std::vector<PageFrame> pages;
     unsigned flags = 0;
     HRESULT error = S_OK;
     std::wstring detail;
@@ -91,11 +91,11 @@ bool Visible(FrameworkElement const& item) {
         if (auto ui = node.try_as<UIElement>(); ui && ui.Visibility() != Visibility::Visible) return false;
     return item.ActualWidth() > 32 && item.ActualHeight() > 0;
 }
-Lease* Find(Page& page, DependencyObject const& object, DependencyProperty const& property) {
+Lease* Find(PageFrame& page, DependencyObject const& object, DependencyProperty const& property) {
     for (auto& lease : page.leases) if (lease.object == object && lease.property == property) return &lease;
     return nullptr;
 }
-template<class T> T Baseline(Page& page, DependencyObject const& object, DependencyProperty const& property) {
+template<class T> T Baseline(PageFrame& page, DependencyObject const& object, DependencyProperty const& property) {
     if (auto lease = Find(page, object, property); lease && lease->Ours()) return unbox_value<T>(lease->baseline);
     return unbox_value<T>(object.GetValue(property));
 }
@@ -103,7 +103,7 @@ template<class T> bool Equal(Object const& a, Object const& b) {
     auto left = a.try_as<Windows::Foundation::IReference<T>>(), right = b.try_as<Windows::Foundation::IReference<T>>();
     return left && right && Same(left.Value(), right.Value());
 }
-template<class T> HRESULT Set(State& state, Page& page, DependencyObject const& object,
+template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject const& object,
                              DependencyProperty const& property, wchar_t const* name, T desired, unsigned feature) {
     auto lease = Find(page, object, property);
     if (lease && !lease->Ours()) {
@@ -126,6 +126,7 @@ template<class T> HRESULT Set(State& state, Page& page, DependencyObject const& 
     if (!lease) {
         auto local = object.ReadLocalValue(property);
         if (local != DependencyProperty::UnsetValue() && !local.try_as<Windows::Foundation::IReference<T>>()) return E_NOTIMPL;
+        if (page.leases.size() >= 256) return E_OUTOFMEMORY;
         page.leases.push_back({object, property, local, object.GetValue(property), box_value(desired), feature, Equal<T>});
         lease = &page.leases.back();
     }
@@ -142,7 +143,7 @@ template<class T> HRESULT Set(State& state, Page& page, DependencyObject const& 
     if (!Equal<T>(object.GetValue(property), lease->applied)) return E_FAIL;
     return S_OK;
 }
-HRESULT Restore(Page& page) {
+HRESULT Restore(PageFrame& page) {
     HRESULT error = S_OK;
     for (auto it = page.leases.rbegin(); it != page.leases.rend(); ++it) {
         auto hr = it->Restore(); if (FAILED(hr)) error = hr;
@@ -150,7 +151,7 @@ HRESULT Restore(Page& page) {
     if (SUCCEEDED(error)) page.leases.clear();
     return error;
 }
-bool Initialize(Page& page) {
+bool Initialize(PageFrame& page) {
     auto host = page.host.get();
     if (!host || !host.XamlRoot() || host.ActualWidth() <= 0 || host.ActualHeight() <= 0) return false;
     if (!page.pane.get()) {
@@ -160,7 +161,7 @@ bool Initialize(Page& page) {
     }
     return !!page.pane.get();
 }
-HRESULT Apply(State& state, Page& page) {
+HRESULT Apply(State& state, PageFrame& page) {
     if (page.detached || !(state.flags & dt::EdgeToEdge)) return Restore(page);
     page.ready = Initialize(page);
     if (!page.ready) return S_OK;
@@ -181,6 +182,19 @@ HRESULT Apply(State& state, Page& page) {
     for (unsigned i = 0; parent && parent != pane && i < 8; ++i, parent = VisualTreeHelper::GetParent(parent))
         if (auto element = parent.try_as<FrameworkElement>()) frames.push_back(element);
     HRESULT result = S_OK;
+    // Replaced tab content must not keep stale frame objects or their overrides.
+    for (auto it = page.leases.begin(); it != page.leases.end();) {
+        bool present = it->object == host || std::any_of(frames.begin(), frames.end(), [&](auto const& item) {
+            auto rect = Bounds(item, root);
+            return it->object == item && rect.Width >= frame.Width * .9 && rect.Height >= frame.Height * .9;
+        });
+        if (!present) {
+            auto hr = it->Restore();
+            if (SUCCEEDED(hr)) { it = page.leases.erase(it); continue; }
+            result = hr;
+        }
+        ++it;
+    }
     unsigned before = state.writes;
     for (auto const& element : frames) {
         auto rect = Bounds(element, root);
@@ -272,11 +286,11 @@ void dt::ObservePage(std::shared_ptr<void> const& value, unsigned long long id, 
             if (page.host.get() == host) { page.detached = false; return; }
             auto hr = Restore(page);
             if (FAILED(hr)) { state.error = hr; return; }
-            page = Page{}; page.id = id; page.host = host; page.ready = Initialize(page); return;
+            page = PageFrame{}; page.id = id; page.host = host; page.ready = Initialize(page); return;
         }
         if (state.pages.size() >= 128) return;
         {
-            Page page{}; page.id = id; page.host = host;
+            PageFrame page{}; page.id = id; page.host = host;
             page.ready = Initialize(page); state.pages.push_back(std::move(page));
         }
     } catch (...) { static_cast<State*>(value.get())->error = to_hresult(); }
@@ -309,6 +323,9 @@ void dt::TickPages(std::shared_ptr<void> const& value) noexcept {
 unsigned dt::QueryPages(std::shared_ptr<void> const& value, unsigned feature) noexcept {
     if (!value) return 0;
     auto& state = *static_cast<State*>(value.get());
+    if (!state.updating) for (auto& page : state.pages) if (!page.ready && !page.detached) {
+        try { page.ready = Initialize(page); } catch (...) { page.ready = false; }
+    }
     unsigned matched = 0, verified = 0;
     for (auto const& page : state.pages) if (!page.detached && page.ready && (feature != SquareSidebar || page.corners)) {
         ++matched; if (SUCCEEDED(page.error)) ++verified;
@@ -324,7 +341,7 @@ unsigned dt::OwnedPages(std::shared_ptr<void> const& value, unsigned feature) no
 }
 HRESULT dt::PagesError(std::shared_ptr<void> const& value) noexcept { return value ? static_cast<State*>(value.get())->error : S_OK; }
 std::wstring dt::PagesErrorText(std::shared_ptr<void> const& value) {
-    if (!value) return L"Page styling is unavailable.";
+    if (!value) return L"PageFrame styling is unavailable.";
     auto& state = *static_cast<State*>(value.get());
     if (!state.detail.empty()) return state.detail;
     return FAILED(state.error) ? L"Could not apply or restore the page frame properties." : L"";
