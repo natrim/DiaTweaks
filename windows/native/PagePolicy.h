@@ -29,11 +29,7 @@ inline size_t FrameCount(Box page, std::span<Box const> ancestors) {
     }
     return count;
 }
-inline Insets FrameMargin(Insets value, bool edge, bool hiddenToolbar) {
-    if (edge) return Strip(value);
-    if (hiddenToolbar && Small(value.top)) value.top = 0;
-    return value;
-}
+inline Insets FrameMargin(Insets value, bool edge) { return edge ? Strip(value) : value; }
 inline Corners Square(Corners value, bool left, bool right) {
     return {left ? 0 : value.tl, right ? 0 : value.tr, right ? 0 : value.br, left ? 0 : value.bl};
 }

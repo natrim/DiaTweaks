@@ -135,6 +135,11 @@ int main() {
             Check(SendMessageW(hwnd, dt::Configure, dt::SquareSidebar, 0) == 0 && fake->PageElement()->pageFlags == 0, "square preference can remain dormant without edge-to-edge");
             Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && SendMessageW(hwnd, dt::PageOwned, 0, 0) == 0, "page baselines restored");
         }
+        Check(SendMessageW(hwnd, dt::Configure, dt::PageFlags | dt::ToolbarParts, 0) == 0, "combine page modes with hidden toolbar");
+        Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->PageElement()->pageFlags == 0,
+              "disabling edge-to-edge restores page styles while toolbar stays hidden");
+        Check(SendMessageW(hwnd, dt::PageOwned, 0, 0) == 0 && fake->Compacted(11), "toolbar compaction owns no page styling");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore combined mode test");
         fake->PageElement()->failPageStyle = true;
         Check(SendMessageW(hwnd, dt::Configure, dt::PageFlags, 0) == -1, "unsupported page style cannot report success");
         fake->PageElement()->failPageStyle = false;

@@ -4,6 +4,8 @@
 #include "../native/Scope.h"
 #include "../native/Hover.h"
 #include "../native/PagePolicy.h"
+#include "../native/PageClipPolicy.h"
+#include <array>
 
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 int main() {
@@ -88,11 +90,11 @@ int main() {
     Check(dt::page::FrameCount(pageBox, ancestors) == 1, "do not cross sidebar shell to borrow rounded frames above it");
     Check(dt::page::FrameAncestor({200, 44, 1200, 752}, {200, 4, 1200, 792}), "revealed toolbar remains inside frame scope");
     Check(!dt::page::FrameAncestor(pageBox, {0, 0, 1404, 800}), "sidebar and window shell are excluded");
-    auto topOnly = dt::page::FrameMargin({0, 4, 4, 4}, false, true);
-    Check(topOnly.left == 0 && topOnly.top == 0 && topOnly.right == 4 && topOnly.bottom == 4, "hidden toolbar removes only the real top inset");
-    auto edgeMargin = dt::page::FrameMargin({0, 4, 4, 4}, true, false);
+    auto topOnly = dt::page::FrameMargin({0, 4, 4, 4}, false);
+    Check(topOnly.left == 0 && topOnly.top == 4 && topOnly.right == 4 && topOnly.bottom == 4, "toolbar hiding without edge-to-edge preserves all outer insets");
+    auto edgeMargin = dt::page::FrameMargin({0, 4, 4, 4}, true);
     Check(edgeMargin.left == 0 && edgeMargin.top == 0 && edgeMargin.right == 0 && edgeMargin.bottom == 0, "edge layout removes actual outer margin without shifting left");
-    auto nativeMargin = dt::page::FrameMargin({0, 4, 4, 4}, false, false);
+    auto nativeMargin = dt::page::FrameMargin({0, 4, 4, 4}, false);
     Check(nativeMargin.top == 4 && nativeMargin.right == 4 && nativeMargin.bottom == 4, "disabled modes preserve original insets");
     auto corners = dt::page::Square({8, 9, 10, 11}, true, false);
     Check(corners.tl == 0 && corners.bl == 0 && corners.tr == 9 && corners.br == 10, "square only sidebar-facing corners");
@@ -102,6 +104,41 @@ int main() {
     Check(corners.bl == 0 && corners.br == 7, "bottom-only rounded frame squares its sidebar corner");
     corners = dt::page::Square({0, 0, 7, 7}, false, true);
     Check(corners.bl == 7 && corners.br == 0, "bottom-only frame works with right sidebar too");
+    // Exercise the same per-corner ownership code used by RectangleClip.
+    std::array<dt::page::Radius, 4> clip{{{0, 0}, {0, 0}, {7, 7}, {7, 7}}};
+    std::array<dt::page::RadiusOverride, 4> clipOwners{};
+    for (unsigned cycle = 0; cycle < 3; ++cycle) {
+        for (unsigned i = 0; i < 4; ++i) {
+            auto read = [&] { return clip[i]; };
+            auto write = [&](auto value) { clip[i] = value; };
+            bool selected = dt::page::SidebarCorner(i, true, false);
+            Check(clipOwners[i].Update(selected, read, write), "composition clip write is verified");
+            Check(clipOwners[i].Update(selected, read, write), "repeated clip apply keeps the original radius");
+        }
+        Check(clip[3] == dt::page::Radius{} && clip[2] == dt::page::Radius{7, 7}, "bottom-left clip is square and opposite radius is preserved");
+        Check(clipOwners[3].owned && !clipOwners[2].owned, "own only the modified composition corner");
+        for (unsigned i = 0; i < 4; ++i)
+            Check(clipOwners[i].Update(false, [&] { return clip[i]; }, [&](auto value) { clip[i] = value; }), "unload restores clip radii");
+        Check(clip[3] == dt::page::Radius{7, 7}, "original bottom-left radius restored after repeated apply");
+    }
+    auto& owner = clipOwners[3];
+    auto readClip = [&] { return clip[3]; };
+    auto writeClip = [&](auto value) { clip[3] = value; };
+    Check(owner.Update(true, readClip, writeClip), "seed clip override");
+    clip[3] = {9, 6};
+    Check(owner.Update(false, readClip, writeClip) && clip[3] == dt::page::Radius{9, 6}, "restore preserves a radius changed by Dia");
+    Check(owner.Update(true, readClip, writeClip), "capture Dia's new radius");
+    Check(owner.Update(false, readClip, [](auto) {}) == false && owner.owned, "failed restore stays owned for retry");
+    Check(owner.Update(false, readClip, writeClip) && clip[3] == dt::page::Radius{9, 6}, "retry restores the latest native radius");
+    Check(!owner.Update(true, readClip, [](auto) {}), "failed composition write cannot verify success");
+    Check(owner.Update(false, readClip, writeClip) && clip[3] == dt::page::Radius{9, 6}, "failed apply leaves the native clip intact");
+    bool clipWriteThrew = false;
+    try {
+        owner.Update(true, readClip, [&](auto value) { writeClip(value); throw std::runtime_error("late setter failure"); });
+    } catch (std::runtime_error const&) { clipWriteThrew = true; }
+    Check(clipWriteThrew && owner.owned && clip[3] == dt::page::Radius{}, "partially failed setter retains restoration data");
+    Check(owner.Update(false, readClip, writeClip) && clip[3] == dt::page::Radius{9, 6}, "partially applied clip can be restored");
+    Check(dt::page::SidebarCorner(2, false, true) && !dt::page::SidebarCorner(3, false, true), "right-sidebar clip selection uses bottom-right");
     Check(dt::MissingDependency(dt::SquareSidebar, 0) == dt::EdgeToEdge && dt::MissingDependency(dt::SquareSidebar, dt::EdgeToEdge) == 0,
           "square sidebar corners depend on edge-to-edge");
     Check(!dt::HiddenWithToolbar(dt::EdgeToEdge, dt::Toolbar) && !dt::HiddenWithToolbar(dt::SquareSidebar, dt::Toolbar), "page options are independent of toolbar hiding");

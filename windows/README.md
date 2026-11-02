@@ -312,15 +312,18 @@ sidebar itself are not styled.
 **Square corners by the sidebar** requires Edge-to-edge. It changes only the two
 corners facing a visible inline sidebar, keeping the opposite side's original
 radii. Hiding the sidebar restores those corners. It targets exposed XAML page
-CornerRadius properties; native/compositor-only clipping is not rewritten, and
-a layout without a supported rounded page frame leaves this switch unavailable.
+CornerRadius properties and existing RectangleClip masks on full-size page
+visuals. Clip bounds, offsets and the opposite corners are preserved. Each
+changed corner has its own snapshot and readback check; disable/reset/unload
+restores it only if Dia has not changed that value. Unsupported clip shapes are
+left alone. A layout without a supported rounded frame leaves the switch unavailable.
 This is not a claim of macOS full-screen/animation/shadow parity.
 
 Both options default off for existing and new Windows installations. The square
 corner choice remains saved but inactive when Edge-to-edge is off. The modes
 refresh after tab changes and resizing. Original local values or style/default
 sources are restored when disabling, resetting or unloading. Bindings,
-animations and unsupported property sources are refused. Diagnostics include
+animations and unsupported XAML property sources are refused. Diagnostics include
 supported frame counts, rounded-frame counts, owned page properties and the last
 page-layout HRESULT. Actual results in Dia need on-device verification.
 
@@ -342,15 +345,13 @@ Guessed negative margins on VariantHost have been removed: an independently
 sized native web surface can be shifted instead of expanded by those margins.
 The reported Windows layout exposes CornerRadius on both the inner Grid and
 outer Border; both are styled on the sidebar-facing side. Their generated
-composition clips follow those XAML properties. Rounded frame capability is
+composition clips are also checked directly for remaining corner radii. Rounded frame capability is
 probed before enabling Edge-to-edge, so it does not depend on a prior apply.
 
-Hide toolbar also removes the small top margin on the outer page wrapper, even
-when Edge-to-edge and hover reveal are off. The report showed zero-height toolbar
-rows with a remaining 4-DIP outer margin. Edge-to-edge removes all small outer
-insets; hide-only retains the right and bottom insets. A single property owner
-handles mode transitions and restores the original margin on disable/unload.
-The top inset stays compact during hover reveal to avoid moving the trigger.
+Hide toolbar compacts only the toolbar rows and height wrappers. It preserves
+all outer page margins, including the small top inset, when Edge-to-edge is off.
+Only Edge-to-edge removes those insets. Disabling it restores the original
+margin even while the toolbar remains hidden.
 
 Compaction follows Hide toolbar itself, including when Reveal toolbar on hover is off.
 Toolbar compaction now walks through implicit grid rows, supports nested
@@ -362,3 +363,8 @@ floor is fixed at protocol 10 independently of the current report protocol.
 Square corners follows same-size page ancestors beyond the first inset wrapper,
 so an outer bottom-corner Border/Grid is included too. The layout report now
 shows up to 20 ancestors to cover the same search depth.
+
+Square corners also repairs a remaining bottom-left/bottom-right RectangleClip
+radius after the XAML corner changes. Diagnostics report `ownedClipCorners` in
+addition to XAML property ownership. The existing clip object and its geometry
+remain in place, and replaced tab clips are restored before being released.

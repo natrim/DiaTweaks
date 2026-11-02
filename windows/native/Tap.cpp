@@ -165,7 +165,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (stopping) return 0;
             dt::TickPages(pages);
             if (pageAttempts) --pageAttempts;
-            if (!(flags & (dt::PageFlags | dt::Toolbar)) && !pageAttempts) KillTimer(hwnd, PageTimer);
+            if (!(flags & dt::PageFlags) && !pageAttempts) KillTimer(hwnd, PageTimer);
             dt::RefreshSettings();
             return 0;
         }
@@ -339,8 +339,8 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 else ++it;
             }
             if (FAILED(dt::ConfigurePages(pages, flags))) ++failures;
-            if ((flags & (dt::PageFlags | dt::Toolbar)) && !SetTimer(window, PageTimer, 200, nullptr)) ++failures;
-            else if (!(flags & (dt::PageFlags | dt::Toolbar)) && !pageAttempts) KillTimer(window, PageTimer);
+            if ((flags & dt::PageFlags) && !SetTimer(window, PageTimer, 200, nullptr)) ++failures;
+            else if (!(flags & dt::PageFlags) && !pageAttempts) KillTimer(window, PageTimer);
             dt::RefreshSettings();
             return failures ? -1 : 0;
         }

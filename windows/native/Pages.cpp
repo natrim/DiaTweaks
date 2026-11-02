@@ -6,18 +6,23 @@
 #endif
 #include "PageHost.h"
 #include "PagePolicy.h"
+#include "PageClipPolicy.h"
 #include "Rules.h"
 #include "Layout.h"
 #include <sstream>
 #include <winrt/Microsoft.UI.Xaml.h>
+#include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Foundation.Numerics.h>
 #include <vector>
 #include <algorithm>
 #include <functional>
+#include <array>
 
 namespace {
 using namespace winrt;
@@ -50,10 +55,54 @@ struct Lease {
         } catch (...) { return to_hresult(); }
     }
 };
+using Microsoft::UI::Composition::RectangleClip;
+using Microsoft::UI::Composition::Visual;
+using Microsoft::UI::Composition::ContainerVisual;
+using Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
+dt::page::Radius ReadRadius(RectangleClip const& clip, unsigned corner) {
+    Windows::Foundation::Numerics::float2 value{};
+    switch (corner) {
+    case 0: value = clip.TopLeftRadius(); break;
+    case 1: value = clip.TopRightRadius(); break;
+    case 2: value = clip.BottomRightRadius(); break;
+    default: value = clip.BottomLeftRadius(); break;
+    }
+    return {value.x, value.y};
+}
+void WriteRadius(RectangleClip const& clip, unsigned corner, dt::page::Radius value) {
+    Windows::Foundation::Numerics::float2 radius{value.x, value.y};
+    switch (corner) {
+    case 0: clip.TopLeftRadius(radius); break;
+    case 1: clip.TopRightRadius(radius); break;
+    case 2: clip.BottomRightRadius(radius); break;
+    default: clip.BottomLeftRadius(radius); break;
+    }
+}
+struct ClipLease {
+    RectangleClip clip{nullptr};
+    std::array<dt::page::RadiusOverride, 4> radii{};
+    unsigned Owned() const {
+        unsigned count = 0;
+        for (auto const& radius : radii) if (radius.owned) ++count;
+        return count;
+    }
+    HRESULT Update(bool left, bool right) noexcept {
+        HRESULT hr = S_OK;
+        for (unsigned i = 0; i < 4; ++i) {
+            try {
+                bool square = dt::page::SidebarCorner(i, left, right);
+                if (!radii[i].Update(square, [&] { return ReadRadius(clip, i); },
+                    [&](auto value) { WriteRadius(clip, i, value); })) hr = E_FAIL;
+            } catch (...) { hr = to_hresult(); }
+        }
+        return hr;
+    }
+};
 struct PageFrame {
     unsigned long long id;
     weak_ref<FrameworkElement> host, pane;
     std::vector<Lease> leases;
+    std::vector<ClipLease> clips;
     std::vector<weak_ref<FrameworkElement>> sidebars;
     ULONGLONG scanned = 0;
     bool ready = false, corners = false, detached = false;
@@ -148,6 +197,10 @@ template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject co
 }
 HRESULT Restore(PageFrame& page) {
     HRESULT error = S_OK;
+    for (auto& clip : page.clips) {
+        auto hr = clip.Update(false, false); if (FAILED(hr)) error = hr;
+    }
+    page.clips.erase(std::remove_if(page.clips.begin(), page.clips.end(), [](auto const& clip) { return clip.Owned() == 0; }), page.clips.end());
     for (auto it = page.leases.rbegin(); it != page.leases.rend(); ++it) {
         auto hr = it->Restore(); if (FAILED(hr)) error = hr;
     }
@@ -179,6 +232,62 @@ std::vector<FrameworkElement> Frames(FrameworkElement const& host, UIElement con
     frames.insert(frames.end(), ancestors.begin(), ancestors.begin() + count);
     return frames;
 }
+void VisualClips(Visual const& visual, float width, float height, std::vector<RectangleClip>& found, unsigned& visited, unsigned depth = 0) {
+    if (!visual || depth > 2 || visited++ >= 64 || found.size() >= 128) return;
+    auto size = visual.Size();
+    // Zero-size internal visuals inherit their parent's clip, as in Dia's
+    // diagnostics. Exclude positively sized toolbar/button visual subtrees.
+    if ((size.x > 0 && size.x < width * .9f) || (size.y > 0 && size.y < height * .9f)) return;
+    if (auto value = visual.Clip()) if (auto clip = value.try_as<RectangleClip>(); clip &&
+        std::find(found.begin(), found.end(), clip) == found.end()) found.push_back(clip);
+    if (auto container = visual.try_as<ContainerVisual>())
+        for (auto const& child : container.Children()) {
+            if (visited >= 64 || found.size() >= 128) break;
+            VisualClips(child, width, height, found, visited, depth + 1);
+        }
+}
+std::vector<RectangleClip> FrameClips(std::vector<FrameworkElement> const& frames, UIElement const& root, Rect frame) {
+    std::vector<RectangleClip> clips;
+    for (auto const& element : frames) {
+        auto rect = Bounds(element, root);
+        if (rect.Width < frame.Width * .9 || rect.Height < frame.Height * .9) continue;
+        unsigned visited = 0;
+        try { VisualClips(ElementCompositionPreview::GetElementVisual(element), frame.Width, frame.Height, clips, visited); }
+        catch (...) { /* Some host elements have no accessible backing visual. */ }
+    }
+    return clips;
+}
+bool HasRoundedClip(PageFrame const& page, std::vector<RectangleClip> const& clips) {
+    for (auto const& clip : clips) {
+        for (unsigned i = 0; i < 4; ++i) if (ReadRadius(clip, i) != dt::page::Radius{}) return true;
+        for (auto const& lease : page.clips) if (lease.clip == clip && lease.Owned()) return true;
+    }
+    return false;
+}
+HRESULT StyleClips(PageFrame& page, std::vector<RectangleClip> const& clips, bool left, bool right) {
+    HRESULT result = S_OK;
+    for (auto it = page.clips.begin(); it != page.clips.end();) {
+        if (std::find(clips.begin(), clips.end(), it->clip) == clips.end()) {
+            auto hr = it->Update(false, false);
+            if (SUCCEEDED(hr)) { it = page.clips.erase(it); continue; }
+            result = hr;
+        }
+        ++it;
+    }
+    for (auto const& clip : clips) {
+        auto it = std::find_if(page.clips.begin(), page.clips.end(), [&](auto const& lease) { return lease.clip == clip; });
+        if (it == page.clips.end()) {
+            if (!left && !right) continue;
+            if (page.clips.size() >= 128) return E_OUTOFMEMORY;
+            ClipLease lease{}; lease.clip = clip;
+            page.clips.push_back(std::move(lease)); it = page.clips.end() - 1;
+        }
+        auto hr = it->Update(left, right);
+        if (FAILED(hr)) result = hr;
+    }
+    page.clips.erase(std::remove_if(page.clips.begin(), page.clips.end(), [](auto const& clip) { return clip.Owned() == 0; }), page.clips.end());
+    return result;
+}
 bool Initialize(PageFrame& page) {
     auto host = page.host.get();
     if (!host || !host.XamlRoot() || host.ActualWidth() <= 0 || host.ActualHeight() <= 0) return false;
@@ -189,16 +298,18 @@ bool Initialize(PageFrame& page) {
     }
     if (!page.pane.get()) return false;
     page.corners = false;
-    for (auto const& element : Frames(host, host.XamlRoot().Content()))
+    auto frames = Frames(host, host.XamlRoot().Content());
+    for (auto const& element : frames)
         if (auto property = RadiusProperty(element); property &&
             dt::page::HasRadius(Plain(Baseline<CornerRadius>(page, element, property)))) page.corners = true;
+    auto root = host.XamlRoot().Content();
+    if (HasRoundedClip(page, FrameClips(frames, root, Bounds(host, root)))) page.corners = true;
     return true;
 }
 HRESULT Apply(State& state, PageFrame& page) {
     if (page.detached) return Restore(page);
     bool edge = (state.flags & dt::EdgeToEdge) != 0;
-    bool hiddenToolbar = (state.flags & dt::Toolbar) != 0;
-    if (!edge && !hiddenToolbar) {
+    if (!edge) {
         auto hr = Restore(page);
         page.ready = Initialize(page);
         return hr;
@@ -243,8 +354,8 @@ HRESULT Apply(State& state, PageFrame& page) {
             std::isnan(element.Width()) && std::isnan(element.Height())) {
             auto property = FrameworkElement::MarginProperty();
             auto value = Baseline<Thickness>(page, element, property);
-            auto desired = dt::page::FrameMargin(Plain(value), edge, hiddenToolbar);
-            unsigned owners = (edge ? dt::EdgeToEdge : 0u) | (hiddenToolbar ? dt::Toolbar : 0u);
+            auto desired = dt::page::FrameMargin(Plain(value), edge);
+            unsigned owners = dt::EdgeToEdge;
             auto hr = Set(state, page, element, property, L"Margin", Native(desired), owners);
             if (FAILED(hr) && edge) result = hr;
         }
@@ -285,6 +396,8 @@ HRESULT Apply(State& state, PageFrame& page) {
     }
     frame = Bounds(host, root);
     page.corners = false;
+    unsigned beforeCorners = state.writes;
+    bool square = edge && (state.flags & dt::SquareSidebar) != 0;
     for (auto const& element : frames) {
         auto rect = Bounds(element, root);
         if (rect.Width < frame.Width * .9 || rect.Height < frame.Height * .9) continue;
@@ -292,10 +405,20 @@ HRESULT Apply(State& state, PageFrame& page) {
         if (corners) {
             auto value = Baseline<CornerRadius>(page, element, corners);
             if (dt::page::HasRadius(Plain(value))) page.corners = true;
-            bool square = edge && (state.flags & dt::SquareSidebar) != 0;
             auto hr = Set(state, page, element, corners, L"CornerRadius", Native(dt::page::Square(Plain(value), square && left, square && right)), dt::SquareSidebar);
             if (FAILED(hr)) result = hr;
         }
+    }
+    if (state.writes != beforeCorners) rootElement.UpdateLayout();
+    // XAML CornerRadius does not cover every existing composition clip. In
+    // particular the lower-corner RectangleClip can retain its native radius.
+    // Change only the selected corner radii on the existing clip object.
+    auto clips = FrameClips(frames, root, Bounds(host, root));
+    if (HasRoundedClip(page, clips)) page.corners = true;
+    auto clipResult = StyleClips(page, clips, square && left, square && right);
+    if (FAILED(clipResult)) {
+        state.detail = L"Could not apply or restore page RectangleClip corner radii.";
+        result = clipResult;
     }
     return result;
 }
@@ -306,7 +429,7 @@ void Update(State& state) {
         try { page.error = Apply(state, page); } catch (...) { page.error = to_hresult(); }
         if (FAILED(page.error)) state.error = page.error;
     }
-    state.pages.erase(std::remove_if(state.pages.begin(), state.pages.end(), [](auto const& page) { return (page.detached || !page.host.get()) && page.leases.empty(); }), state.pages.end());
+    state.pages.erase(std::remove_if(state.pages.begin(), state.pages.end(), [](auto const& page) { return (page.detached || !page.host.get()) && page.leases.empty() && page.clips.empty(); }), state.pages.end());
 }
 }
 std::shared_ptr<void> dt::CreatePages(PageApi api) { auto state = std::make_shared<State>(); state->api = api; return state; }
@@ -370,8 +493,10 @@ unsigned dt::QueryPages(std::shared_ptr<void> const& value, unsigned feature) no
 unsigned dt::OwnedPages(std::shared_ptr<void> const& value, unsigned feature) noexcept {
     if (!value) return 0;
     unsigned count = 0;
-    for (auto const& page : static_cast<State*>(value.get())->pages) for (auto const& lease : page.leases)
-        if (!feature || (feature & lease.feature)) ++count;
+    for (auto const& page : static_cast<State*>(value.get())->pages) {
+        for (auto const& lease : page.leases) if (!feature || (feature & lease.feature)) ++count;
+        if (!feature || (feature & SquareSidebar)) for (auto const& clip : page.clips) count += clip.Owned();
+    }
     return count;
 }
 HRESULT dt::PagesError(std::shared_ptr<void> const& value) noexcept { return value ? static_cast<State*>(value.get())->error : S_OK; }
@@ -390,6 +515,9 @@ std::wstring dt::PagesLayoutReport(std::shared_ptr<void> const& value) {
     for (auto const& page : state.pages) {
         out << L"Page frame: ready=" << page.ready << L" rounded=" << page.corners << L" detached=" << page.detached
             << L" ownedProperties=" << page.leases.size() << L" hr=0x" << std::hex << static_cast<unsigned long>(page.error) << std::dec << L'\n';
+        unsigned clipCorners = 0;
+        for (auto const& clip : page.clips) clipCorners += clip.Owned();
+        out << L"  ownedClipCorners=" << clipCorners << L'\n';
         if (auto host = page.host.get()) out << LayoutSnapshot(reinterpret_cast<IInspectable*>(get_abi(host)));
         if (out.tellp() > 140000) { out << L"[page report limit]\n"; break; }
     }
