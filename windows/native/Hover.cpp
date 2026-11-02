@@ -7,6 +7,7 @@
 #include "HoverHost.h"
 #include "Layout.h"
 #include "ViewportTrace.h"
+#include "NativeViewport.h"
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
@@ -82,6 +83,9 @@ struct Region {
     std::vector<std::unique_ptr<ElementLease>> containers;
     double height = 56;
     dt::ViewportTrace trace;
+    std::shared_ptr<void> nativeGuard = dt::CreateNativeViewportGuard();
+    FrameworkElement::LayoutUpdated_revoker nativeLayout;
+    bool watchingNative = false, updatingNative = false;
     Microsoft::UI::Xaml::Media::CompositionTarget::Rendering_revoker rendering;
     bool tracing = false;
     ULONGLONG traceUntil = 0;
@@ -166,6 +170,48 @@ std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
         if (toolbar.ActualHeight() > 0) region->height = toolbar.ActualHeight();
         return region;
     } catch (...) { return {}; }
+}
+namespace {
+void UpdateNativeViewport(Region& region, bool discover) noexcept {
+    if (region.updatingNative) return;
+    region.updatingNative = true;
+    struct Done { bool& value; ~Done() { value=false; } } done{region.updatingNative};
+    try {
+        auto pane=region.pane.get(), toolbar=region.toolbar.get();
+        if (!pane || !toolbar || !pane.XamlRoot() || toolbar.Visibility()!=Visibility::Collapsed) {
+            dt::SuspendNativeViewportGuard(region.nativeGuard); return;
+        }
+        auto page=Named(pane,L"VariantHost");
+        if (!page) return;
+        region.page=page;
+        auto root=pane.XamlRoot();
+        auto rect=Bounds(page,root.Content()), paneRect=Bounds(pane,root.Content());
+        auto bookmarks=region.bookmarks.get(), info=Named(pane,L"InfoBarHost");
+        bool otherBar=(bookmarks && bookmarks.Visibility()==Visibility::Visible && bookmarks.ActualHeight()>0) ||
+            (info && info.Visibility()==Visibility::Visible && info.ActualHeight()>0);
+        // A tab may briefly arrange the page below the old collapsed toolbar.
+        // Keep the existing outer inset (pane origin), excluding real info bars.
+        if (!otherBar && rect.Y-paneRect.Y>12 && rect.Y-paneRect.Y<=256) {
+            rect.Height+=rect.Y-paneRect.Y; rect.Y=paneRect.Y;
+        }
+        double scale=root.RasterizationScale();
+        RECT client{static_cast<LONG>(std::lround(rect.X*scale)),static_cast<LONG>(std::lround(rect.Y*scale)),
+            static_cast<LONG>(std::lround((rect.X+rect.Width)*scale)),static_cast<LONG>(std::lround((rect.Y+rect.Height)*scale))};
+        auto hwnd=Microsoft::UI::GetWindowFromWindowId(root.ContentIslandEnvironment().AppWindowId());
+        auto hr=dt::UpdateNativeViewportGuard(region.nativeGuard,hwnd,client,discover);
+        if (FAILED(hr)) region.traceError=hr;
+    } catch (...) { region.traceError=to_hresult(); }
+}
+void WatchNativeViewport(std::shared_ptr<Region> const& region) {
+    if (region->watchingNative) return;
+    auto pane=region->pane.get();
+    if (!pane) return;
+    std::weak_ptr<Region> weak=region;
+    region->nativeLayout=pane.LayoutUpdated(auto_revoke,[weak](Object const&,Object const&) noexcept {
+        if (auto current=weak.lock()) UpdateNativeViewport(*current,false);
+    });
+    region->watchingNative=true;
+}
 }
 dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& value, bool revealed) noexcept {
     try {
@@ -268,6 +314,8 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
     auto region=static_cast<Region*>(value.get());
     try {
         if (!compact) {
+            dt::SuspendNativeViewportGuard(region->nativeGuard);
+            region->nativeLayout.revoke(); region->watchingNative=false;
             auto row=RestoreExcept(region->rows,[](auto const&){return false;});
             auto wrapper=RestoreExcept(region->containers,[](auto const&){return false;});
             return FAILED(row)?row:wrapper;
@@ -330,6 +378,9 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
         // page presenter again can cause another native viewport size cycle.
         // Complete only the layout already requested by Dia and our policies.
         pane.UpdateLayout();
+        UpdateNativeViewport(*region,true);
+        if (auto toolbar=region->toolbar.get(); toolbar && toolbar.Visibility()==Visibility::Collapsed)
+            WatchNativeViewport(std::static_pointer_cast<Region>(value));
         CaptureViewport(*region, L"after-layout", true);
         TraceViewportFrames(std::static_pointer_cast<Region>(value));
         return S_OK;
@@ -339,7 +390,7 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
 std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const& value) {
     if (!value) return L"VIEWPORT TIMING unavailable\n";
     auto region = static_cast<Region*>(value.get());
-    auto report = region->trace.Report();
+    auto report = dt::NativeViewportGuardReport(region->nativeGuard) + region->trace.Report();
     if (FAILED(region->traceError)) {
         wchar_t error[80]{};
         swprintf_s(error, L"  traceError=0x%08lX\n", static_cast<unsigned long>(region->traceError));

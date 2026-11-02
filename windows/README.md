@@ -387,3 +387,22 @@ and native surface bottom. The render callback only observes geometry and is
 revoked on expiry, toolbar reveal or region destruction. It reads no page text,
 URLs or window titles. Switch a few tabs and copy Status / diagnostics afterwards
 to distinguish a delayed native resize from repainting inside an already full-size surface.
+
+### Native viewport resize guard
+
+The timing log showed a full-height XAML page while the existing Chromium host
+was reset to the toolbar-visible rectangle on tab switches. While the toolbar
+is hidden, the viewport guard corrects `WM_WINDOWPOSCHANGING` on matching
+same-process `Chrome_WidgetWin_1` child windows before that stale move/resize
+is applied. It publishes current XAML bounds to the native window procedure;
+that callback does not access WinUI or wait on the XAML thread. Layout changes
+refresh the target, including window resize and DPI changes. A temporary old
+toolbar offset is excluded while real info/bookmark bars retain their space.
+
+Reveal/disable/unload suspends the constraint before restoring the toolbar and
+restores the original window procedure when it is still ours. Other subclass
+chains remain intact. Other panes, classes and processes are excluded. Timing
+diagnostics include the guarded-window count and prevented resize count.
+Win32 integration tests cover actual child windows, repeated stale native
+resizes, real target resizing, release/re-arm, destruction and another window
+thread. These tests do not reproduce Chromium's rendering or Dia itself.
