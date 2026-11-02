@@ -222,9 +222,10 @@ struct Settings : std::enable_shared_from_this<Settings> {
                 row.toggle.IsOn((flags & row.mask) != 0);
                 bool toolbarHidden = dt::HiddenWithToolbar(row.mask, flags);
                 bool ready = api.available(api.context, row.required);
-                bool needsToolbar = row.mask == dt::RevealToolbar && !(flags & dt::Toolbar);
+                unsigned missing = dt::MissingDependency(row.mask, flags);
+                bool needsToolbar = missing != dt::None;
                 row.toggle.IsEnabled(ready && !toolbarHidden && !needsToolbar);
-                row.note.Text(needsToolbar ? L"Requires Hide toolbar. Your preference is preserved." : toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
+                row.note.Text(needsToolbar ? (missing == dt::EdgeToEdge ? L"Requires Edge-to-edge web content. Your preference is preserved." : L"Requires Hide toolbar. Your preference is preserved.") : toolbarHidden ? L"Hidden with the toolbar. Your preference is preserved."
                                             : L"Not available in the current browser window.");
                 row.note.Visibility(ready && !toolbarHidden && !needsToolbar ? Visibility::Collapsed : Visibility::Visible);
             }

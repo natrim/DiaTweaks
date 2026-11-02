@@ -3,6 +3,7 @@
 #include "../native/Rules.h"
 #include "../native/Scope.h"
 #include "../native/Hover.h"
+#include "../native/PagePolicy.h"
 
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 int main() {
@@ -72,6 +73,16 @@ int main() {
           !dt::InHoverBand(12, 91, 10, 20, 100, 500, 56, false, 55), "blank strip plus 16-DIP page edge is covered");
     Check(!dt::InHoverBand(12, 148, 10, 20, 100, 500, 56, false, 1000), "unrelated large page offset cannot create a huge trigger");
     Check(!dt::InHoverBand(12, 30, 10, 20, 100, 10, 56, false, 55), "trigger stays within pane height");
+    auto stripped = dt::page::Strip({6, 55, -6, 8});
+    Check(stripped.left == 0 && stripped.top == 55 && stripped.right == -6 && stripped.bottom == 0, "remove only small positive page padding");
+    Check(dt::page::Gap(6.01) == 6 && dt::page::Gap(55) == 0 && dt::page::Gap(-6) == 0, "stable padding gaps preserve toolbar and non-padding offsets");
+    auto corners = dt::page::Square({8, 9, 10, 11}, true, false);
+    Check(corners.tl == 0 && corners.bl == 0 && corners.tr == 9 && corners.br == 10, "square only sidebar-facing corners");
+    corners = dt::page::Square({8, 9, 10, 11}, false, true);
+    Check(corners.tl == 8 && corners.bl == 11 && corners.tr == 0 && corners.br == 0, "right sidebar preserves opposite corners");
+    Check(dt::MissingDependency(dt::SquareSidebar, 0) == dt::EdgeToEdge && dt::MissingDependency(dt::SquareSidebar, dt::EdgeToEdge) == 0,
+          "square sidebar corners depend on edge-to-edge");
+    Check(!dt::HiddenWithToolbar(dt::EdgeToEdge, dt::Toolbar) && !dt::HiddenWithToolbar(dt::SquareSidebar, dt::Toolbar), "page options are independent of toolbar hiding");
     unsigned covered = 0;
     for (auto const& tweak : dt::Tweaks) {
         Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");

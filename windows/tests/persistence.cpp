@@ -64,6 +64,7 @@ int main() {
         Check(second.Send(dt::Query, dt::Chat) == 0x10001 && second.Send(dt::Query, dt::Sidebar) == 0x10001, "saved choice hides both controls");
         Check(second.Send(dt::Query, dt::RecentTabs) == 0x10001 && second.Send(dt::Query, dt::Spaces) == 0x10001,
               "saved high-bit sidebar choices reapply in a new session");
+        Check(second.Send(dt::PageOwned, dt::EdgeToEdge) == 1 && second.Send(dt::PageOwned, dt::SquareSidebar) == 1, "saved page choices apply in a new backend");
         Check(Read(app) == dt::All && Read(launcher) == 0, "attachment preserves saved preferences and ignores launcher defaults");
         Check(second.Send(dt::ChangeAndSave, dt::Sidebar) == S_OK && Read(app) == dt::Sidebar, "latest UI change persists");
         Check(second.Send(dt::ChangeAndSave, dt::UnsupportedFlag) < 0 && Read(app) == dt::Sidebar, "rejected setting cannot overwrite saved choice");

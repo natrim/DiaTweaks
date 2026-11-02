@@ -156,7 +156,6 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
         if (SUCCEEDED(hr)) region->layout.reset();
         return hr;
     }
-    if (region->layout) return S_OK;
     try {
         auto host = region->owner.get();
         if (!host || host.Visibility() != Visibility::Collapsed) return S_OK;
@@ -176,6 +175,16 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
                     if (first <= index && index < last) return S_OK;
                 }
                 auto row = grid.RowDefinitions().GetAt(static_cast<unsigned>(index));
+                if (region->layout) {
+                    auto previous = region->layout->row.get();
+                    bool unchanged = previous == row &&
+                        (!region->layout->ownsHeight || row.Height().GridUnitType == GridUnitType::Auto) &&
+                        (!region->layout->ownsMinimum || row.MinHeight() == 0);
+                    if (unchanged) return S_OK;
+                    HRESULT restored = region->layout->Restore();
+                    if (FAILED(restored)) return restored;
+                    region->layout.reset();
+                }
                 auto height = row.Height();
                 if (height.GridUnitType != GridUnitType::Pixel && height.GridUnitType != GridUnitType::Auto) return S_OK;
                 bool changeHeight = height.GridUnitType == GridUnitType::Pixel && height.Value > 0;

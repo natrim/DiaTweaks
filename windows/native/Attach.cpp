@@ -102,6 +102,10 @@ void Diagnostics(HWND hwnd) {
                << L", detachedOverrides=" << Send(hwnd, dt::Stats, dt::DetachedOverrides)
                << L", lastQueryError=0x" << std::hex
                << static_cast<unsigned long>(Send(hwnd, dt::Stats, dt::LastQueryError)) << std::dec << L'\n';
+    std::wcerr << L"Page styles: frames=" << (Send(hwnd, dt::PageQuery, dt::EdgeToEdge) & 0xffff)
+               << L", roundedFrames=" << (Send(hwnd, dt::PageQuery, dt::SquareSidebar) & 0xffff)
+               << L", ownedProperties=" << Send(hwnd, dt::PageOwned) << L", hr=0x" << std::hex
+               << static_cast<unsigned long>(Send(hwnd, dt::PageError)) << std::dec << L'\n';
     const wchar_t* stages[] = {
         L"none", L"register-target", L"read-visibility", L"visibility-type", L"visibility-policy",
         L"hold-target", L"create-collapsed", L"set-collapsed", L"verify-collapsed", L"create-original",
@@ -221,6 +225,10 @@ int wmain(int argc, wchar_t** argv) {
             std::wcerr << L"--reveal-toolbar requires --hide-toolbar.\n";
             return 2;
         }
+        if (!settingsUi && (flags & dt::SquareSidebar) && !(flags & dt::EdgeToEdge)) {
+            std::wcerr << L"--square-sidebar-corners requires --edge-to-edge.\n";
+            return 2;
+        }
         Progress(L"Finding the target Dia process...");
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
@@ -302,6 +310,8 @@ int wmain(int argc, wchar_t** argv) {
                 bool found = true;
                 for (auto const& item : dt::NativeTargets) if ((flags & item.flag) && !item.optional)
                     found = found && ((Send(window, dt::Query, item.flag) & 0xffff) != 0);
+                for (unsigned feature : {dt::EdgeToEdge, dt::SquareSidebar}) if ((flags & feature) && (flags & dt::EdgeToEdge))
+                    found = found && ((Send(window, dt::PageQuery, feature) & 0xffff) != 0);
                 if (found) break;
                 Sleep(50);
             } while (GetTickCount64() < deadline);
@@ -337,7 +347,20 @@ int wmain(int argc, wchar_t** argv) {
             if (!restore || (restoring & target))
                 ok = ok && ((!restore && item.optional && matched == 0) || (matched != 0 && hidden == matched));
         }
+        for (unsigned feature : {dt::EdgeToEdge, dt::SquareSidebar}) if ((reporting & feature) && (restore || (flags & dt::EdgeToEdge))) {
+            auto counts = static_cast<unsigned>(Send(window, dt::PageQuery, feature));
+            if (restore) {
+                auto remaining = Send(window, dt::PageOwned, feature);
+                std::wcout << (feature == dt::EdgeToEdge ? L"Page padding" : L"Sidebar corners") << L": owned overrides=" << remaining << L'\n';
+                ok = ok && remaining == 0 && SUCCEEDED(static_cast<HRESULT>(Send(window, dt::PageError)));
+            } else {
+                std::wcout << (feature == dt::EdgeToEdge ? L"Page padding" : L"Sidebar corners") << L": " << (counts >> 16) << L"/" << (counts & 0xffff) << L" frames verified\n";
+                ok = ok && (counts & 0xffff) != 0 && (counts >> 16) == (counts & 0xffff);
+            }
+        }
         if (!ok) {
+            auto pageError = static_cast<HRESULT>(Send(window, dt::PageError));
+            if (FAILED(pageError)) std::wcerr << L"Page style error: 0x" << std::hex << static_cast<unsigned long>(pageError) << std::dec << L'\n';
             // Restore the previous selection if a new selection was only partly applied.
             bool rolledBack = !restore && Send(window, dt::Configure, previous) == 0;
             std::wcerr << L"Could not verify every requested change. "

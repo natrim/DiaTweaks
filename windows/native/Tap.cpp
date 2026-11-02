@@ -12,6 +12,7 @@
 #include "SettingsHost.h"
 #include "Preferences.h"
 #include "HoverHost.h"
+#include "PageHost.h"
 
 namespace {
 HINSTANCE module;
@@ -58,7 +59,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     struct PendingScope { dt::Target named; unsigned attempts = 0; };
     std::map<InstanceHandle, PendingScope> pendingRecent;
     static constexpr UINT_PTR ScopeTimer = 0x4454, HoverTimer = 0x4455;
-    unsigned hoverAttempts = 0;
+    unsigned hoverAttempts = 0, pageAttempts = 0;
+    static constexpr UINT_PTR PageTimer = 0x4456;
+    std::shared_ptr<void> pages;
     std::map<InstanceHandle, Button> buttons; // Accessed only on SetSite's UI thread.
 
     bool HoverEnabled() const { return (flags & dt::Toolbar) && (flags & dt::RevealToolbar); }
@@ -89,7 +92,10 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             auto previous = button.hover;
             auto sample = dt::ReadToolbarHover(button.hoverRegion, button.hover.revealed);
             bool reveal = button.hover.Update(sample, now);
-            if (reveal == previous.revealed) continue;
+            if (reveal == previous.revealed) {
+                if (!reveal && (flags & button.target)) Apply(node, button, true);
+                continue;
+            }
             bool owned = button.active;
             if (Apply(node, button, (flags & button.target) && !reveal)) button.hoverRestored = reveal && owned;
             else button.hover = previous;
@@ -124,6 +130,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         stopping = true;
         KillTimer(window, ScopeTimer);
         KillTimer(window, HoverTimer);
+        KillTimer(window, PageTimer);
         pendingRecent.clear();
         state = 2;
         AddRef();
@@ -151,6 +158,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+        if (msg == WM_TIMER && wp == PageTimer) {
+            if (stopping) return 0;
+            dt::TickPages(pages);
+            if (pageAttempts) --pageAttempts;
+            if (!(flags & dt::PageFlags) && !pageAttempts) KillTimer(hwnd, PageTimer);
+            dt::RefreshSettings();
+            return 0;
+        }
         if (msg == WM_TIMER && wp == HoverTimer) {
             if (!stopping) UpdateHover();
             return 0;
@@ -179,6 +194,17 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return 0;
         }
         if (stopping && msg >= WM_APP) return E_ABORT;
+        if (msg == dt::PageQuery) return dt::QueryPages(pages, static_cast<unsigned>(wp));
+        if (msg == dt::PageOwned) return dt::OwnedPages(pages, static_cast<unsigned>(wp));
+        if (msg == dt::PageError) return dt::PagesError(pages);
+        if (msg == dt::PageNode) {
+            auto object = Instance(static_cast<InstanceHandle>(wp));
+            if (object) dt::ObservePage(pages, static_cast<InstanceHandle>(wp), object.get());
+            dt::TickPages(pages);
+            pageAttempts = 25; SetTimer(window, PageTimer, 200, nullptr);
+            dt::RefreshSettings();
+            return 0;
+        }
         if (msg == dt::SettingsState) return dt::SettingsStatus(wp);
         if (msg == dt::SaveSelection) return preferences.Write(flags);
         if (msg == dt::LoadSelection) {
@@ -195,6 +221,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 [](void* context, unsigned target) {
                     auto self = static_cast<Tap*>(context);
                     if (target == dt::RevealToolbar) return self->EnsureHoverRegions();
+                    if (target & dt::PageFlags) return (dt::QueryPages(self->pages, target) & 0xffff) != 0;
                     return (self->Message(self->window, dt::Query, target, 0) & 0xffff) != 0 || self->Message(self->window, dt::Active, target, 0) != 0;
                 },
                 [](void* context, unsigned selection) {
@@ -255,6 +282,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::Flags) return flags;
         if (msg == dt::AddNode) { Discover(static_cast<InstanceHandle>(wp), static_cast<dt::Target>(static_cast<ULONG_PTR>(lp) & 0xffffffffULL), static_cast<dt::Family>((static_cast<ULONG_PTR>(lp) >> 32) & 0xff)); return 0; }
         if (msg == dt::RemoveNode) {
+            dt::ForgetPage(pages, static_cast<InstanceHandle>(wp));
             pendingRecent.erase(static_cast<InstanceHandle>(wp));
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
@@ -265,6 +293,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return 0;
         }
         if (msg == dt::Configure) {
+            if (messageDepth > 1) return -1;
             if (wp & ~dt::All) return -1;
             flags = static_cast<unsigned>(wp);
             if (HoverEnabled()) {
@@ -292,11 +321,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 if (it->second.detached && !it->second.active) it = buttons.erase(it);
                 else ++it;
             }
+            if (FAILED(dt::ConfigurePages(pages, flags))) ++failures;
+            if ((flags & dt::PageFlags) && !SetTimer(window, PageTimer, 200, nullptr)) ++failures;
+            else if (!(flags & dt::PageFlags) && !pageAttempts) KillTimer(window, PageTimer);
             dt::RefreshSettings();
             return failures ? -1 : 0;
         }
         if (msg == dt::Active) {
-            unsigned count = 0;
+            unsigned count = dt::OwnedPages(pages, static_cast<unsigned>(wp));
             for (const auto& [node, button] : buttons) {
                 (void)node;
                 if (button.active && (!wp || (button.target & wp))) ++count;
@@ -304,7 +336,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return count;
         }
         if (msg == dt::OwnedMask) {
-            unsigned mask = 0;
+            unsigned mask = (dt::OwnedPages(pages, dt::EdgeToEdge) ? dt::EdgeToEdge : 0) | (dt::OwnedPages(pages, dt::SquareSidebar) ? dt::SquareSidebar : 0);
             for (const auto& [node, button] : buttons) {
                 (void)node;
                 if (button.active) mask |= button.target;
@@ -334,6 +366,11 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         changeError.clear();
         unsigned previous = flags;
         bool applied = Message(window, dt::Configure, selection, 0) == 0;
+        if (!applied) changeError = dt::PagesErrorText(pages);
+        for (unsigned feature : {dt::EdgeToEdge, dt::SquareSidebar}) if ((selection & feature) && (selection & dt::EdgeToEdge)) {
+            auto counts = dt::QueryPages(pages, feature);
+            if (!(counts & 0xffff) || (counts >> 16) != (counts & 0xffff)) { applied = false; changeError += L" No supported page frame verified. "; }
+        }
         for (auto const& item : dt::NativeTargets) if (selection & item.flag) {
             unsigned target = item.flag;
             auto counts = static_cast<unsigned>(Message(window, dt::Query, target, 0));
@@ -542,6 +579,18 @@ public:
         hr = value->QueryInterface(__uuidof(IXamlDiagnostics), reinterpret_cast<void**>(&diagnostics));
         if (FAILED(hr)) { service->Release(); service = nullptr; return hr; }
         site = value; site->AddRef();
+        pages = dt::CreatePages({this, [](void* context, IInspectable* object, wchar_t const* property) {
+            auto self = static_cast<Tap*>(context);
+            InstanceHandle node = 0;
+            if (FAILED(self->diagnostics->RegisterInstance(object, &node))) return false;
+            dt::Properties chain(self->service, node);
+            auto value = chain.Find(property);
+            if (!value || chain.HasBinding(value->Index)) return false;
+            LONGLONG allowed = IsValueHandle | IsValueHandleAndEvaluatedValue;
+            if (value->MetadataBits & ~allowed) return false;
+            auto source = chain.Source(*value);
+            return source == BaseValueSourceLocal || source == BaseValueSourceDefault || source == BaseValueSourceStyle || source == BaseValueSourceBuiltInStyle;
+        }});
         // The diagnostics runtime can retain our COM vtable for the process lifetime.
         HMODULE pinned;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
@@ -572,6 +621,8 @@ public:
         if (mutation == Add) {
             ++added;
             auto type = dt::Text(element.Type);
+            if (dt::Text(element.Name) == L"VariantHost")
+                return PostMessageW(window, dt::PageNode, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
             if (type == L"Microsoft.UI.Xaml.Controls.NavigationView" || type == L"NavigationView")
                 return PostMessageW(window, dt::SettingsNode, static_cast<WPARAM>(element.Handle), 0) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
             // Dia uses custom host types as well as built-in panels/presenters.

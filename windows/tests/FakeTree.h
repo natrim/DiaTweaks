@@ -22,6 +22,8 @@ public:
     bool headerPeers = false;
     dt::HoverSample hoverSample{true};
     bool compacted = false, failLayoutRestore = false;
+    bool failPageStyle = false, inlineSidebar = true;
+    unsigned pageFlags = 0;
     const wchar_t* name = L"";
     explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -98,7 +100,8 @@ public:
         {16, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 15}},
         {17, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button"}},
         {18, {L"SpaceSwitcherButton", L"Visible", true, false}},
-        {19, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 14}}
+        {19, {L"OverflowButton", L"Visible", false, false, L"OverflowButton", L"Button", false, L"Visible", 14}},
+        {20, {L"", L"Visible", false, false, L"VariantHost", L"ContentPresenter"}}
     };
     unsigned clears = 0, writes = 0;
     unsigned staleValueWrites = 0;
@@ -224,6 +227,12 @@ public:
         }
         *out = element; (*out)->AddRef(); return S_OK;
     }
+    void ResetToolbarRow(InstanceHandle node) { elements.at(node)->compacted = false; }
+    FakeElement* PageElement() {
+        IInspectable* object = nullptr;
+        Check(SUCCEEDED(GetIInspectableFromHandle(20, &object)), "fake page element");
+        auto element = static_cast<FakeElement*>(object); object->Release(); return element;
+    }
     bool Compacted(InstanceHandle canonical) const { return elements.at(canonical)->compacted; }
     void FailLayoutRestore(InstanceHandle canonical, bool fail) { elements.at(canonical)->failLayoutRestore = fail; }
     void Hover(InstanceHandle canonical, dt::HoverSample sample) {
@@ -269,3 +278,39 @@ inline HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& region, bool c
     element->compacted = compact;
     return S_OK;
 }
+
+namespace {
+struct FakePages { std::shared_ptr<FakeElement> page; unsigned long long id = 0; unsigned flags = 0; HRESULT error = S_OK; };
+}
+inline std::shared_ptr<void> dt::CreatePages(PageApi) { return std::make_shared<FakePages>(); }
+inline void dt::ObservePage(std::shared_ptr<void> const& value, unsigned long long id, IInspectable* object) noexcept {
+    auto state = static_cast<FakePages*>(value.get());
+    object->AddRef(); state->page = Adopt(static_cast<FakeElement*>(object)); state->id = id;
+}
+inline void dt::ForgetPage(std::shared_ptr<void> const& value, unsigned long long id) noexcept {
+    auto state = static_cast<FakePages*>(value.get());
+    if (state->id == id && state->page) { state->page->pageFlags = 0; state->page.reset(); }
+}
+inline HRESULT dt::ConfigurePages(std::shared_ptr<void> const& value, unsigned flags) noexcept {
+    auto state = static_cast<FakePages*>(value.get());
+    state->flags = flags; state->error = S_OK;
+    if (state->page) {
+        if ((flags & EdgeToEdge) && state->page->failPageStyle) return state->error = E_NOTIMPL;
+        state->page->pageFlags = flags & EdgeToEdge ? flags & PageFlags : 0;
+    }
+    return S_OK;
+}
+inline void dt::TickPages(std::shared_ptr<void> const& value) noexcept { auto state = static_cast<FakePages*>(value.get()); ConfigurePages(value, state->flags); }
+inline unsigned dt::QueryPages(std::shared_ptr<void> const& value, unsigned) noexcept {
+    auto state = static_cast<FakePages*>(value.get()); return state->page ? (SUCCEEDED(state->error) ? 0x10001 : 1) : 0;
+}
+inline unsigned dt::OwnedPages(std::shared_ptr<void> const& value, unsigned mask) noexcept {
+    auto state = static_cast<FakePages*>(value.get());
+    if (!state->page) return 0;
+    unsigned flags = state->page->pageFlags;
+    unsigned count = (!mask || (mask & EdgeToEdge)) && (flags & EdgeToEdge) ? 1u : 0u;
+    if ((!mask || (mask & SquareSidebar)) && (flags & SquareSidebar) && state->page->inlineSidebar) ++count;
+    return count;
+}
+inline HRESULT dt::PagesError(std::shared_ptr<void> const& value) noexcept { return static_cast<FakePages*>(value.get())->error; }
+inline std::wstring dt::PagesErrorText(std::shared_ptr<void> const& value) { return FAILED(PagesError(value)) ? L"Fake unsupported page binding." : L""; }

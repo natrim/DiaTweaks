@@ -107,6 +107,12 @@ int main() {
         Sleep(260);
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->nodes.at(11).value == L"Collapsed" && fake->Compacted(11), "toolbar hides and compacts row after leaving and delay");
+        fake->ResetToolbarRow(11);
+        SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
+        Check(fake->Compacted(11), "tab switch row reset is repaired without hover reveal");
+        fake->nodes.at(11).value = L"Visible"; fake->ResetToolbarRow(11);
+        SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
+        Check(fake->nodes.at(11).value == L"Collapsed" && fake->Compacted(11), "tab switch cannot restore hidden toolbar and gap");
         fake->Hover(11, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->nodes.at(11).value == L"Collapsed", "disabling hover while revealed rehides toolbar");
@@ -114,6 +120,20 @@ int main() {
         Check(SendMessageW(hwnd, dt::Configure, dt::RevealToolbar, 0) == 0 && fake->nodes.at(11).value == L"Visible", "hover choice can remain dormant when Hide toolbar is off");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && fake->nodes.at(1).value == L"Visible", "restore clears hover and child effects");
         fake->Hover(11, {true}); fake->Hover(12, {true});
+        Check(SendMessageW(hwnd, dt::PageQuery, dt::EdgeToEdge, 0) == 0x10001, "page layout is discovered");
+        for (unsigned cycle = 0; cycle < 3; ++cycle) {
+            Check(SendMessageW(hwnd, dt::Configure, dt::PageFlags, 0) == 0 && fake->PageElement()->pageFlags == dt::PageFlags, "both page modes apply repeatedly");
+            Check(SendMessageW(hwnd, dt::Active, dt::EdgeToEdge, 0) == 1 && SendMessageW(hwnd, dt::Active, dt::SquareSidebar, 0) == 1, "page ownership included in restore reporting");
+            fake->PageElement()->pageFlags = 0;
+            SendMessageW(hwnd, WM_TIMER, 0x4456, 0);
+            Check(fake->PageElement()->pageFlags == dt::PageFlags, "page style refresh follows native tab restyling");
+            Check(SendMessageW(hwnd, dt::Configure, dt::SquareSidebar, 0) == 0 && fake->PageElement()->pageFlags == 0, "square preference can remain dormant without edge-to-edge");
+            Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && SendMessageW(hwnd, dt::PageOwned, 0, 0) == 0, "page baselines restored");
+        }
+        fake->PageElement()->failPageStyle = true;
+        Check(SendMessageW(hwnd, dt::Configure, dt::PageFlags, 0) == -1, "unsupported page style cannot report success");
+        fake->PageElement()->failPageStyle = false;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "failed page change can be restored");
         fake->Drop(16); Pump();
         fake->nodes.at(15).headerPeers = false;
         fake->ReAdd(16); Pump();

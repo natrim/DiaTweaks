@@ -11,6 +11,8 @@ The macOS installer and Rust CLI do not manage this backend.
 
 | Windows switch | Upstream tweak | Selector |
 | --- | --- | --- |
+| `--edge-to-edge` | `edgeToEdge` (experimental) | Scoped VariantHost page frame and small padding |
+| `--edge-to-edge --square-sidebar-corners` | `squareSidebarCorners` (experimental) | Sidebar-facing CornerRadius values on page chrome |
 | `--gui` (or no arguments) | Windows control panel | `DiaTweaks.Gui.exe` |
 | `--status` | Read-only session state and diagnostics | Existing session only |
 | `--settings` | Settings UI and saved selection | Dia Settings → Patches |
@@ -54,7 +56,7 @@ stays hidden. Native layout may reflow while the bar is shown; floating overlay
 and animation parity with macOS are not implemented. Window/pane geometry, DPI,
 multiple panes and menus need testing in real Dia.
 
-Edge-to-edge content, corner shapes, horizontal-tab recent tabs,
+Horizontal-tab recent tabs,
 Chats library button, tab grouping, active-window styling
 and automatic attachment after restart/update are not implemented. Dia's
 built-in updater is unchanged. WSL cannot run this backend.
@@ -147,7 +149,7 @@ to disconnect and attach the current build with those choices. `--restore` also 
 Closing or leaving Patches is read-only: unload-triggered/programmatic switch
 events do not save changes. Only active-page switch actions or explicit CLI
 changes write preferences. After an upgrade, the launcher prints the loaded
-choices for all nine switches to help verify restart behavior.
+choices for all eleven switches to help verify restart behavior.
 
 ### Disconnect and update without restarting
 
@@ -293,3 +295,31 @@ Name or Value properties and skips document/Chromium renderer subtrees.
 AutomationIds are app-provided and may still contain information you do not
 want to share. Existing output files are not overwritten. Optional parameters:
 `-OutputPath`, `-MaxDepth` (default 14), `-MaxNodes` (default 2000).
+
+## Page frame tweaks (experimental)
+
+**Edge-to-edge web content** removes small positive padding (up to 12 logical
+pixels) from the VariantHost page frame and full-size page chrome. It can expand
+the page over matching small gaps toward the window or an adjacent sidebar.
+Large offsets, toolbar space, negative margins and settings/dialog content are
+preserved. Chat/assistant page variants are excluded. Window captions and the
+sidebar itself are not styled.
+
+**Square corners by the sidebar** requires Edge-to-edge. It changes only the two
+corners facing a visible inline sidebar, keeping the opposite side's original
+radii. Hiding the sidebar restores those corners. It targets exposed XAML page
+CornerRadius properties; native/compositor-only clipping is not rewritten, and
+a layout without a supported rounded page frame leaves this switch unavailable.
+This is not a claim of macOS full-screen/animation/shadow parity.
+
+Both options default off for existing and new Windows installations. The square
+corner choice remains saved but inactive when Edge-to-edge is off. The modes
+refresh after tab changes and resizing. Original local values or style/default
+sources are restored when disabling, resetting or unloading. Bindings,
+animations and unsupported property sources are refused. Diagnostics include
+supported frame counts, rounded-frame counts, owned page properties and the last
+page-layout HRESULT. Actual results in Dia need on-device verification.
+
+The hidden-toolbar watcher also reapplies compaction while the pointer is away,
+so a native tab switch resetting/replacing the row does not require hover to
+remove its gap again. A newly bound row is left to Dia instead of overwriting it.

@@ -5,7 +5,7 @@ namespace dt {
 // Keep existing preference bits stable across upgrades.
 enum Target : unsigned {
     None = 0, Chat = 1, Sidebar = 2, Downloads = 4, Bookmark = 8,
-    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128, RecentTabs = 256, Spaces = 512, RevealToolbar = 1024
+    Extensions = 16, ExtensionsOverflow = 32, Toolbar = 64, BookmarksBar = 128, RecentTabs = 256, Spaces = 512, RevealToolbar = 1024, EdgeToEdge = 2048, SquareSidebar = 4096
 };
 enum class Family : unsigned { Button, Repeater, Host };
 struct NativeTarget { Target flag; const wchar_t* id; Family family; bool optional; };
@@ -24,7 +24,8 @@ inline constexpr NativeTarget NativeTargets[] = {
 // The host contains both the repeater and its overflow; do not patch those children.
 inline constexpr unsigned ExtensionParts = Extensions | ExtensionsOverflow;
 inline constexpr unsigned ToolbarParts = Toolbar | BookmarksBar;
-inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts | RecentTabs | Spaces | RevealToolbar;
+inline constexpr unsigned All = Chat | Sidebar | Downloads | Bookmark | ExtensionParts | ToolbarParts | RecentTabs | Spaces | RevealToolbar | EdgeToEdge | SquareSidebar;
+inline constexpr unsigned PageFlags = EdgeToEdge | SquareSidebar;
 inline constexpr unsigned UnsupportedFlag = 1u << 30;
 struct Tweak {
     unsigned mask, required;
@@ -34,6 +35,10 @@ struct Tweak {
     const wchar_t* detail;
 };
 inline constexpr Tweak Tweaks[] = {
+    {EdgeToEdge, EdgeToEdge, L"EdgeToEdge", L"--edge-to-edge", L"Edge-to-edge web content",
+     L"Remove small page-frame padding at window and sidebar edges. Experimental."},
+    {SquareSidebar, SquareSidebar, L"SquareSidebar", L"--square-sidebar-corners", L"Square corners by the sidebar",
+     L"Make the page corners next to the sidebar square. Requires Edge-to-edge web content. Experimental."},
     {ToolbarParts, Toolbar, L"HideToolbar", L"--hide-toolbar", L"Hide toolbar",
      L"Hide the address and navigation toolbar and bookmarks bar. Experimental."},
     {RevealToolbar, RevealToolbar, L"RevealToolbar", L"--reveal-toolbar", L"Reveal toolbar on hover",
@@ -71,6 +76,11 @@ inline Target IdentifyButton(std::wstring_view id, Target namedTarget, Family fa
 inline bool HiddenWithToolbar(unsigned target, unsigned flags) {
     constexpr unsigned toolbarChildren = Chat | Sidebar | Downloads | Bookmark | ExtensionParts;
     return (flags & Toolbar) && (target & toolbarChildren);
+}
+inline unsigned MissingDependency(unsigned target, unsigned flags) {
+    if (target == RevealToolbar && !(flags & Toolbar)) return Toolbar;
+    if (target == SquareSidebar && !(flags & EdgeToEdge)) return EdgeToEdge;
+    return None;
 }
 inline bool IsProperty(std::wstring_view name, std::wstring_view property) {
     return name == property || (name.size() > property.size() &&

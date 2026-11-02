@@ -10,6 +10,7 @@ Settings. Chat/sidebar hiding, restoration and saved settings have been confirme
 working on Windows. Downloads, bookmark, extensions and experimental whole-toolbar hiding have also
 been reported working. The latest build adds sidebar Recent Tabs and Spaces hiding;
 those additions need on-device confirmation.
+Experimental page-frame Edge-to-edge and sidebar-corner tweaks are also available.
 The Windows bundle also includes a native control panel for load, unload, reload,
 reset, progress and diagnostics. The remaining macOS tweaks are not ported.
 
