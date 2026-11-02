@@ -425,3 +425,19 @@ it completes an extra layout only after an actual compaction write. Detached
 toolbar snapshots remain available for restore but are excluded from active hover
 and viewport updates and from the active toolbar report. Diagnostics include
 inline host attempts, visibility repairs and deferred host adds.
+
+### Edge inset changes during tab switches
+
+The next trace kept XAML full-sized but briefly restored the native surface's
+4-DIP original inset (5 physical pixels at 125% DPI). Page-property leases now
+watch their Margin/Padding/CornerRadius dependency properties while Edge-to-edge
+is active. Plain app changes are re-evaluated synchronously with the same source
+and binding checks; a newer native value becomes the restoration baseline.
+Restore and observer replacement suppress these callbacks during their own writes.
+
+A replacement navigation host also inherits the previous pane's native viewport
+target. Retiring a toolbar stops its callbacks while retaining that target until
+its replacement takes over. Reveal/disable/unload explicitly release it. Pane
+identity or same-window matching page geometry is required for inheritance; other
+panes are excluded. Diagnostics include early page-property repair and viewport
+handoff counts.

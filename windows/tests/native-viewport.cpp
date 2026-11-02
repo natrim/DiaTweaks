@@ -57,6 +57,11 @@ int main() {
         RECT full{200,4,1000,800}, bad{200,44,996,796};
         Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,full)),"arm native guard");
         Check(Same(Rect(view,owner),full),"initial stale geometry synchronized");
+        auto replacement=guard;
+        guard.reset(); // Old toolbar retires; the shared target must stay active.
+        AttemptSize(view,{200,8,996,796});
+        Check(Same(Rect(view,owner),full),"small original inset rejected during shared guard handoff");
+        guard=std::move(replacement);
         for (unsigned i=0;i<5;++i) {
             AttemptSize(view,bad);
             Check(Same(Rect(view,owner),full),"native tab resize cannot shrink or move viewport");

@@ -26,10 +26,12 @@ public:
     bool compactedAtFlush = false;
     std::function<void()> onLayoutFlush;
     dt::ToolbarPolicyApi toolbarPolicy{};
+    bool navigationHost=false, viewportRetired=false;
+    std::shared_ptr<unsigned> viewportScope;
     bool failPageStyle = false, inlineSidebar = true;
     unsigned pageFlags = 0;
     const wchar_t* name = L"";
-    explicit FakeElement(InstanceHandle handle) : canonical(handle) {}
+    explicit FakeElement(InstanceHandle handle) : canonical(handle), viewportScope(std::make_shared<unsigned>(static_cast<unsigned>(handle))) {}
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
         if (!out) return E_POINTER;
         *out = nullptr;
@@ -118,7 +120,7 @@ public:
     void ShowToolbarNatively(InstanceHandle canonical) {
         nodes.at(canonical).value=L"Visible";
         auto element=elements.at(canonical).get();
-        if (element->compacted && element->toolbarPolicy.changed) element->toolbarPolicy.changed(element->toolbarPolicy.context);
+        if (element->compacted && !element->viewportRetired && element->toolbarPolicy.changed) element->toolbarPolicy.changed(element->toolbarPolicy.context);
     }
     void Drop(InstanceHandle canonical) {
         InstanceHandle handle = current.count(canonical) ? current.at(canonical) : canonical;
@@ -232,6 +234,7 @@ public:
         auto const& entry = nodes.at(canonical);
         element->name = dt::IsScopeMarker(entry.name) ? entry.name : entry.id;
         element->headerPeers = entry.headerPeers;
+        element->navigationHost=std::wstring_view(entry.name)==L"NavigationBarHost";
         auto parent = nodes.at(canonical).parent;
         element->parent = nullptr;
         if (parent) {
@@ -292,12 +295,26 @@ inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region,
     return region ? static_cast<FakeElement*>(region.get())->hoverSample : HoverSample{};
 }
 
+inline void dt::ReattachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
+    if (value) static_cast<FakeElement*>(value.get())->viewportRetired=false;
+}
+inline void dt::RetireToolbarViewport(std::shared_ptr<void> const& region) noexcept {
+    if (region) { auto e=static_cast<FakeElement*>(region.get()); ++e->viewportDetaches; e->viewportRetired=true; }
+}
+inline bool dt::InheritToolbarViewport(std::shared_ptr<void> const& value,std::shared_ptr<void> const& old) noexcept {
+    if (!value || !old || value==old) return false;
+    auto next=static_cast<FakeElement*>(value.get()), previous=static_cast<FakeElement*>(old.get());
+    if (!next->navigationHost || !previous->navigationHost || (!previous->compacted && !previous->viewportRetired)) return false;
+    if (next->viewportScope!=previous->viewportScope) { next->viewportScope=previous->viewportScope; dt::RetireToolbarViewport(old); }
+    return true;
+}
 inline void dt::DetachToolbarViewport(std::shared_ptr<void> const& region) noexcept {
-    if (region) ++static_cast<FakeElement*>(region.get())->viewportDetaches;
+    if (region) { auto e=static_cast<FakeElement*>(region.get()); ++e->viewportDetaches; e->viewportRetired=false; }
 }
 inline HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& region) noexcept {
     if (!region) return S_OK;
     auto element = static_cast<FakeElement*>(region.get());
+    if (element->viewportRetired) return S_OK;
     ++element->layoutFlushes;
     element->compactedAtFlush = element->compacted;
     if (element->onLayoutFlush) element->onLayoutFlush();
@@ -307,8 +324,10 @@ inline HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& region) noexc
 inline HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& region, bool compact) noexcept {
     if (!region) return S_OK;
     auto element = static_cast<FakeElement*>(region.get());
+    if (compact && element->viewportRetired) return S_OK;
     if (!compact && element->compacted && element->failLayoutRestore) return E_FAIL;
     element->compacted = compact;
+    element->viewportRetired=false;
     return S_OK;
 }
 

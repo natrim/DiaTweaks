@@ -37,11 +37,22 @@ Thickness Native(dt::page::Insets a) { return {a.left, a.top, a.right, a.bottom}
 dt::page::Insets Plain(Thickness a) { return {a.Left, a.Top, a.Right, a.Bottom}; }
 dt::page::Corners Plain(CornerRadius a) { return {a.TopLeft, a.TopRight, a.BottomRight, a.BottomLeft}; }
 CornerRadius Native(dt::page::Corners a) { return {a.tl, a.tr, a.br, a.bl}; }
+struct PropertyWatch {
+    weak_ref<DependencyObject> object;
+    DependencyProperty property{nullptr};
+    long long token = 0;
+    bool registered = false;
+    ~PropertyWatch() {
+        try { if (registered) if (auto item=object.get()) item.UnregisterPropertyChangedCallback(property,token); }
+        catch (...) {}
+    }
+};
 struct Lease {
     DependencyObject object{nullptr}; DependencyProperty property{nullptr};
     Object original{nullptr}, baseline{nullptr}, applied{nullptr};
     unsigned feature = 0;
     std::function<bool(Object const&, Object const&)> equal;
+    std::shared_ptr<PropertyWatch> watch;
     bool Ours() const { return equal(object.ReadLocalValue(property), applied); }
     HRESULT Restore() noexcept {
         try {
@@ -108,15 +119,29 @@ struct PageFrame {
     bool ready = false, corners = false, detached = false;
     HRESULT error = S_OK;
 };
-struct State {
+struct State : std::enable_shared_from_this<State> {
     dt::PageApi api;
     std::vector<PageFrame> pages;
     unsigned flags = 0;
     HRESULT error = S_OK;
     std::wstring detail;
     bool updating = false;
-    unsigned writes = 0;
+    unsigned writes = 0, propertyRepairs = 0;
 };
+void WatchProperty(State& state, Lease& lease) {
+    if (lease.watch) return;
+    auto watch=std::make_shared<PropertyWatch>();
+    watch->object=lease.object; watch->property=lease.property;
+    auto weak=state.weak_from_this();
+    watch->token=lease.object.RegisterPropertyChangedCallback(lease.property,[weak](auto const&,auto const&) noexcept {
+        if (auto current=weak.lock(); current && !current->updating && (current->flags & dt::EdgeToEdge)) {
+            ++current->propertyRepairs;
+            dt::ConfigurePages(current,current->flags);
+        }
+    });
+    watch->registered=true;
+    lease.watch=std::move(watch);
+}
 Rect Bounds(FrameworkElement const& item, UIElement const& root) {
     return item.TransformToVisual(root).TransformBounds({0, 0, static_cast<float>(item.ActualWidth()), static_cast<float>(item.ActualHeight())});
 }
@@ -157,7 +182,9 @@ template<class T> bool Equal(Object const& a, Object const& b) {
 template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject const& object,
                              DependencyProperty const& property, wchar_t const* name, T desired, unsigned feature) {
     auto lease = Find(page, object, property);
+    std::shared_ptr<PropertyWatch> retainedWatch;
     if (lease && !lease->Ours()) {
+        retainedWatch=lease->watch;
         page.leases.erase(std::remove_if(page.leases.begin(), page.leases.end(), [&](auto const& entry) { return &entry == lease; }), page.leases.end());
         lease = nullptr;
     }
@@ -178,10 +205,11 @@ template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject co
         auto local = object.ReadLocalValue(property);
         if (local != DependencyProperty::UnsetValue() && !local.try_as<Windows::Foundation::IReference<T>>()) return E_NOTIMPL;
         if (page.leases.size() >= 256) return E_OUTOFMEMORY;
-        page.leases.push_back({object, property, local, object.GetValue(property), box_value(desired), feature, Equal<T>});
+        page.leases.push_back({object, property, local, object.GetValue(property), box_value(desired), feature, Equal<T>, retainedWatch});
         lease = &page.leases.back();
     }
     lease->feature = feature;
+    WatchProperty(state,*lease);
     auto desiredBox = box_value(desired);
     if (Equal<T>(object.GetValue(property), desiredBox) && lease->Ours() && Equal<T>(lease->applied, desiredBox)) return S_OK;
     auto previous = lease->applied;
@@ -437,6 +465,7 @@ void dt::ObservePage(std::shared_ptr<void> const& value, unsigned long long id, 
     if (!value) return;
     try {
         auto& state = *static_cast<State*>(value.get());
+        struct Updating { bool& value; bool previous; Updating(bool& v):value(v),previous(v) { value=true; } ~Updating() { value=previous; } } updating{state.updating};
         Object instance{nullptr}; copy_from_abi(instance, object);
         auto host = instance.try_as<FrameworkElement>();
         if (!host) return;
@@ -458,7 +487,7 @@ void dt::ForgetPage(std::shared_ptr<void> const& value, unsigned long long id) n
     auto& state = *static_cast<State*>(value.get());
     for (auto& page : state.pages) if (page.id == id) page.detached = true;
     if (state.updating) return;
-    try { Update(state); } catch (...) { state.error = to_hresult(); }
+    ConfigurePages(value,state.flags);
 }
 HRESULT dt::ConfigurePages(std::shared_ptr<void> const& value, unsigned flags) noexcept {
     if (!value) return flags & (EdgeToEdge | SquareSidebar) ? E_FAIL : S_OK;
@@ -511,7 +540,7 @@ std::wstring dt::PagesLayoutReport(std::shared_ptr<void> const& value) {
     if (!value) return L"No page style state.\n";
     auto& state = *static_cast<State*>(value.get());
     std::wostringstream out;
-    out << L"PAGE LAYOUT (read-only)\n";
+    out << L"PAGE LAYOUT (read-only)\n" << L"Page early property repairs=" << state.propertyRepairs << L'\n';
     for (auto const& page : state.pages) {
         out << L"Page frame: ready=" << page.ready << L" rounded=" << page.corners << L" detached=" << page.detached
             << L" ownedProperties=" << page.leases.size() << L" hr=0x" << std::hex << static_cast<unsigned long>(page.error) << std::dec << L'\n';

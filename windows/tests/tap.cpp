@@ -221,8 +221,13 @@ int main() {
         fake->nodes.at(1).omitVisibility = false;
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0,"enable early toolbar policy");
         fake->nodes.emplace(21,FakeTree::Node{L"",L"Visible",false,false,L"NavigationBarHost",L"ContentControl"});
+        auto viewportScope=toolbar->viewportScope;
         fake->ReAdd(21);
         Check(fake->nodes.at(21).value==L"Collapsed","live UI host collapses before queued discovery or first layout");
+        IInspectable* replacementToolbar=nullptr;
+        Check(SUCCEEDED(fake->GetIInspectableFromHandle(21,&replacementToolbar)),"replacement toolbar instance");
+        Check(static_cast<FakeElement*>(replacementToolbar)->viewportScope==viewportScope,"new toolbar inherits existing native viewport target");
+        replacementToolbar->Release();
         fake->ShowToolbarNatively(21);
         Check(fake->nodes.at(21).value==L"Collapsed","native visible pulse is repaired before returning to layout");
         Pump();

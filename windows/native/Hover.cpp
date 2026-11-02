@@ -89,7 +89,10 @@ struct Region {
     bool hiddenPolicy = false, watchingVisibility = false, repairingLayout = false;
     long long visibilityToken = 0;
     dt::ToolbarPolicyApi policy{};
-    unsigned layoutWrites = 0;
+    unsigned layoutWrites = 0, viewportHandoffs = 0;
+    bool retiredViewport = false;
+    HWND nativeWindow = nullptr;
+    RECT nativeClient{};
     ~Region() {
         try { if (watchingVisibility) if (auto host=owner.get()) host.UnregisterPropertyChangedCallback(UIElement::VisibilityProperty(),visibilityToken); }
         catch (...) {}
@@ -202,7 +205,7 @@ void dt::WatchToolbarPolicy(std::shared_ptr<void> const& value, ToolbarPolicyApi
 }
 namespace {
 void UpdateNativeViewport(Region& region, bool discover) noexcept {
-    if (region.updatingNative) return;
+    if (region.updatingNative || region.retiredViewport) return;
     region.updatingNative = true;
     struct Done { bool& value; ~Done() { value=false; } } done{region.updatingNative};
     try {
@@ -227,6 +230,9 @@ void UpdateNativeViewport(Region& region, bool discover) noexcept {
         RECT client{static_cast<LONG>(std::lround(rect.X*scale)),static_cast<LONG>(std::lround(rect.Y*scale)),
             static_cast<LONG>(std::lround((rect.X+rect.Width)*scale)),static_cast<LONG>(std::lround((rect.Y+rect.Height)*scale))};
         auto hwnd=Microsoft::UI::GetWindowFromWindowId(root.ContentIslandEnvironment().AppWindowId());
+        if (hwnd && client.right-client.left>32 && client.bottom-client.top>32) {
+            region.nativeWindow=hwnd; region.nativeClient=client;
+        }
         auto hr=dt::UpdateNativeViewportGuard(region.nativeGuard,hwnd,client,discover);
         if (FAILED(hr)) region.traceError=hr;
     } catch (...) { region.traceError=to_hresult(); }
@@ -353,10 +359,47 @@ HRESULT CompactRow(Region& region, RowDefinition const& row) {
     return S_OK;
 }
 }
+void dt::ReattachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
+    if (value) static_cast<Region*>(value.get())->retiredViewport=false;
+}
+void dt::RetireToolbarViewport(std::shared_ptr<void> const& value) noexcept {
+    if (!value) return;
+    auto region=static_cast<Region*>(value.get());
+    region->retiredViewport=region->hiddenPolicy || region->retiredViewport;
+    region->hiddenPolicy=false;
+    region->nativeLayout.revoke(); region->watchingNative=false;
+    // Keep the native target through a toolbar-template replacement. The new
+    // region inherits it; reveal/disable still explicitly suspends the target.
+}
+bool dt::InheritToolbarViewport(std::shared_ptr<void> const& value, std::shared_ptr<void> const& old) noexcept {
+    if (!value || !old || value==old) return false;
+    auto region=static_cast<Region*>(value.get()), previous=static_cast<Region*>(old.get());
+    try {
+        auto host=region->owner.get(), pane=region->pane.get();
+        if (!host || host.Name()!=L"NavigationBarHost" || !pane || (!previous->hiddenPolicy && !previous->retiredViewport)) return false;
+        bool same=pane==previous->pane.get();
+        if (!same && pane.XamlRoot() && previous->nativeWindow) {
+            auto root=pane.XamlRoot();
+            auto hwnd=Microsoft::UI::GetWindowFromWindowId(root.ContentIslandEnvironment().AppWindowId());
+            auto rect=Bounds(pane,root.Content()); double scale=root.RasterizationScale();
+            same=hwnd==previous->nativeWindow && rect.Width>32 &&
+                std::abs(rect.X*scale-previous->nativeClient.left)<=16 &&
+                std::abs(rect.Width*scale-(previous->nativeClient.right-previous->nativeClient.left))<=32;
+        }
+        if (!same) return false;
+        if (region->nativeGuard==previous->nativeGuard) return true;
+        dt::SuspendNativeViewportGuard(region->nativeGuard);
+        region->nativeGuard=previous->nativeGuard;
+        region->nativeWindow=previous->nativeWindow; region->nativeClient=previous->nativeClient;
+        ++region->viewportHandoffs;
+        RetireToolbarViewport(old);
+        return true;
+    } catch (...) { return false; }
+}
 void dt::DetachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
     if (!value) return;
     auto region=static_cast<Region*>(value.get());
-    region->hiddenPolicy=false;
+    region->hiddenPolicy=false; region->retiredViewport=false;
     dt::SuspendNativeViewportGuard(region->nativeGuard);
     region->nativeLayout.revoke(); region->watchingNative=false;
 }
@@ -364,6 +407,7 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
     if (!value) return S_OK;
     auto region=static_cast<Region*>(value.get());
     try {
+        if (compact && region->retiredViewport) return S_OK;
         region->hiddenPolicy=compact;
         if (!compact) {
             DetachToolbarViewport(value);
@@ -418,6 +462,7 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
     if (!value) return S_OK;
     try {
         auto region = static_cast<Region*>(value.get());
+        if (region->retiredViewport) return S_OK;
         auto pane = region->pane.get();
         if (!pane || !pane.XamlRoot()) return S_OK;
         // A tab can replace VariantHost or its native-surface presenter while
@@ -441,7 +486,8 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
 std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const& value) {
     if (!value) return L"VIEWPORT TIMING unavailable\n";
     auto region = static_cast<Region*>(value.get());
-    auto report = dt::NativeViewportGuardReport(region->nativeGuard) + region->trace.Report();
+    auto report = dt::NativeViewportGuardReport(region->nativeGuard) + L"Viewport handoffs="+
+        std::to_wstring(region->viewportHandoffs)+L"\n"+region->trace.Report();
     if (FAILED(region->traceError)) {
         wchar_t error[80]{};
         swprintf_s(error, L"  traceError=0x%08lX\n", static_cast<unsigned long>(region->traceError));

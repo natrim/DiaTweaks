@@ -74,8 +74,17 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     bool ShouldHide(Button const& button) const {
         return (flags & button.target) != 0 && !(HoverEnabled() && (button.target & dt::ToolbarParts) && button.hover.revealed);
     }
+    void InheritViewport(std::shared_ptr<void> const& region) {
+        // Prefer the last live host, then retained restore snapshots.
+        for (unsigned pass=0; pass<2; ++pass) for (auto const& [node,button]:buttons) {
+            (void)node;
+            if (button.target==dt::Toolbar && button.hoverRegion && button.hoverRegion!=region &&
+                static_cast<unsigned>(button.detached)==pass && dt::InheritToolbarViewport(region,button.hoverRegion)) return;
+        }
+    }
     std::shared_ptr<void> TrackToolbar(IInspectable* object) {
         auto region=dt::TrackToolbar(object);
+        if (region) InheritViewport(region);
         if (region) dt::WatchToolbarPolicy(region,{this,[](void* context) {
             auto self=static_cast<Tap*>(context);
             if (self->stopping || !(self->flags & dt::Toolbar)) return;
@@ -120,6 +129,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         HRESULT result = S_OK;
         for (auto& [node, button] : buttons) if (button.target == dt::Toolbar && !button.detached) {
             (void)node;
+            InheritViewport(button.hoverRegion);
             auto hr = dt::FlushToolbarLayout(button.hoverRegion);
             if (FAILED(hr)) { button.failure = dt::AdjustLayout; button.error = hr; result = hr; }
         }
@@ -366,7 +376,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             pendingRecent.erase(static_cast<InstanceHandle>(wp));
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
-                if (it->second.target & dt::ToolbarParts) dt::DetachToolbarViewport(it->second.hoverRegion);
+                if (it->second.target & dt::ToolbarParts) dt::RetireToolbarViewport(it->second.hoverRegion);
                 // Removal from the visual tree is not proof of object destruction.
                 if (it->second.active) it->second.detached = true;
                 else buttons.erase(it);
@@ -493,6 +503,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     void Discover(InstanceHandle node, dt::Target namedTarget, dt::Family family) {
         auto existing = buttons.find(node);
         if (existing != buttons.end()) {
+            if (existing->second.detached) dt::ReattachToolbarViewport(existing->second.hoverRegion);
             existing->second.detached = false;
             Apply(node, existing->second, ShouldHide(existing->second));
             return;
@@ -512,6 +523,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 if (it->second.active && it->second.detached && it->second.identity.get() == identity.get()) {
                     Button saved = std::move(it->second);
                     buttons.erase(it);
+                    dt::ReattachToolbarViewport(saved.hoverRegion);
                     saved.detached = false;
                     auto moved = buttons.emplace(node, std::move(saved)).first;
                     Apply(node, moved->second, ShouldHide(moved->second));
