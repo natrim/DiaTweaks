@@ -119,6 +119,12 @@ public:
         Check(SUCCEEDED(Notify(handle, Remove)), "publish removal");
     }
     void ReAdd(InstanceHandle canonical) {
+        // Ignored element types need not have been inspected before replay.
+        if (!elements.count(canonical)) {
+            IInspectable* object = nullptr;
+            Check(SUCCEEDED(GetIInspectableFromHandle(canonical, &object)), "materialize replayed visual");
+            object->Release();
+        }
         InstanceHandle handle = 0;
         Check(SUCCEEDED(RegisterInstance(elements.at(canonical).get(), &handle)), "new handle for same object");
         detached.erase(canonical);
