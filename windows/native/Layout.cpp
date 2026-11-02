@@ -101,7 +101,7 @@ std::wstring dt::LayoutSnapshot(IInspectable* object) {
     std::wostringstream out; out << std::fixed << std::setprecision(2);
     out << L"Scale=" << host.XamlRoot().RasterizationScale() << L" (logical coordinates; no page text or URLs)\n";
     DependencyObject ancestor = host;
-    for (unsigned depth=0; ancestor && depth<12; ++depth, ancestor=VisualTreeHelper::GetParent(ancestor)) Element(out, ancestor, root, L"ancestor", depth);
+    for (unsigned depth=0; ancestor && depth<20; ++depth, ancestor=VisualTreeHelper::GetParent(ancestor)) Element(out, ancestor, root, L"ancestor", depth);
     struct Visit { DependencyObject node; unsigned depth; };
     std::vector<Visit> queue{{host,0}};
     for (size_t i=0; i<queue.size() && i<96; ++i) {

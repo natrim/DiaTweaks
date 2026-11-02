@@ -301,8 +301,10 @@ want to share. Existing output files are not overwritten. Optional parameters:
 
 **Edge-to-edge web content** removes small positive padding and stretch-layout
 margins (up to 12 logical pixels) from the page chrome. The ancestor search
-includes the rounded Grid, outer Border and inset Grid above the toolbar/page
-pane. The native stretch layout expands the page into these actual insets.
+includes the rounded Grid, outer Border, inset Grid and further page-sized
+wrappers above the toolbar/page pane. It stops before an ancestor widens into
+the sidebar or window shell, rather than treating the first margin as a clip
+boundary. The native stretch layout expands the page into these actual insets.
 Large offsets, toolbar space, negative margins and settings/dialog content are
 preserved. Chat/assistant page variants are excluded. Window captions and the
 sidebar itself are not styled.
@@ -356,3 +358,7 @@ explicit fixed rows and plain fixed-height/min-height wrapper containers, and
 retains each original value for restoration. Shared page rows and bindings are
 preserved. Empty info-bar slots do not block compaction. The detach compatibility
 floor is fixed at protocol 10 independently of the current report protocol.
+
+Square corners follows same-size page ancestors beyond the first inset wrapper,
+so an outer bottom-corner Border/Grid is included too. The layout report now
+shows up to 20 ancestors to cover the same search depth.

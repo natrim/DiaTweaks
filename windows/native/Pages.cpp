@@ -161,19 +161,19 @@ DependencyProperty RadiusProperty(FrameworkElement const& element) {
     if (element.try_as<ContentPresenter>()) return ContentPresenter::CornerRadiusProperty();
     return nullptr;
 }
-std::vector<FrameworkElement> Frames(PageFrame& page, FrameworkElement const& host, UIElement const& root) {
+std::vector<FrameworkElement> Frames(FrameworkElement const& host, UIElement const& root) {
     auto frames = Elements(host, 96, 5);
     std::vector<FrameworkElement> ancestors;
-    std::vector<dt::page::FrameCandidate> candidates;
+    std::vector<dt::page::Box> candidates;
     DependencyObject parent = VisualTreeHelper::GetParent(host);
     // The toolbar/page pane is inside the rounded Border and inset Grid.
-    // Include those ancestors, stopping at the outer inset or a wider app shell.
+    // A small margin is not a clipping boundary: another same-size wrapper
+    // above it can still round the bottom corner. Stop at the wider app shell.
     for (unsigned i = 0; parent && parent != root && i < 20; ++i, parent = VisualTreeHelper::GetParent(parent)) {
         auto element = parent.try_as<FrameworkElement>();
         if (!element) continue;
-        auto margin = Baseline<Thickness>(page, element, FrameworkElement::MarginProperty());
         ancestors.push_back(element);
-        candidates.push_back({Plain(Bounds(element, root)), Plain(margin)});
+        candidates.push_back(Plain(Bounds(element, root)));
     }
     auto count = dt::page::FrameCount(Plain(Bounds(host, root)), candidates);
     frames.insert(frames.end(), ancestors.begin(), ancestors.begin() + count);
@@ -189,7 +189,7 @@ bool Initialize(PageFrame& page) {
     }
     if (!page.pane.get()) return false;
     page.corners = false;
-    for (auto const& element : Frames(page, host, host.XamlRoot().Content()))
+    for (auto const& element : Frames(host, host.XamlRoot().Content()))
         if (auto property = RadiusProperty(element); property &&
             dt::page::HasRadius(Plain(Baseline<CornerRadius>(page, element, property)))) page.corners = true;
     return true;
@@ -211,7 +211,7 @@ HRESULT Apply(State& state, PageFrame& page) {
     if (!rootElement) { page.ready = false; return S_OK; }
     auto frame = Bounds(host, root);
     if (frame.Width <= 0 || frame.Height <= 0) { page.ready = false; return S_OK; }
-    auto frames = Frames(page, host, root);
+    auto frames = Frames(host, root);
     for (auto const& item : frames) {
         auto type = get_class_name(item);
         auto rect = Bounds(item, root);

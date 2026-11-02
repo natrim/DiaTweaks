@@ -21,16 +21,11 @@ inline Insets Strip(Insets value) {
     return {Small(value.left) ? 0 : value.left, Small(value.top) ? 0 : value.top,
             Small(value.right) ? 0 : value.right, Small(value.bottom) ? 0 : value.bottom};
 }
-inline bool HasInset(Insets value) {
-    return Small(value.left) || Small(value.top) || Small(value.right) || Small(value.bottom);
-}
-struct FrameCandidate { Box bounds; Insets margin; };
-inline size_t FrameCount(Box page, std::span<FrameCandidate const> ancestors) {
+inline size_t FrameCount(Box page, std::span<Box const> ancestors) {
     size_t count = 0;
     for (auto const& candidate : ancestors) {
-        if (!FrameAncestor(page, candidate.bounds)) break;
+        if (!FrameAncestor(page, candidate)) break;
         ++count;
-        if (HasInset(candidate.margin)) break;
     }
     return count;
 }
