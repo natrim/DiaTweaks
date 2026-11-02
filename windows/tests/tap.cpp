@@ -85,10 +85,36 @@ int main() {
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "clear failed selection");
         constexpr WPARAM HoverTimer = 0x4455;
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->Compacted(11), "hide-only compacts without hover option");
+        // An unnamed presenter replacement must refresh immediately, before
+        // the 200ms fallback tick, with one flush for the notification burst.
+        Pump();
+        KillTimer(hwnd, HoverTimer);
+        auto toolbar = fake->ToolbarElement();
+        unsigned flushed = toolbar->layoutFlushes;
+        fake->ResetToolbarRow(11);
+        for (unsigned i = 0; i < 12; ++i) fake->ReAdd(6); // non-button, otherwise ignored
+        toolbar->onLayoutFlush = [&] { fake->ReAdd(6); };
+        MSG layout{};
+        Check(PeekMessageW(&layout, hwnd, dt::ToolbarLayout, dt::ToolbarLayout, PM_REMOVE), "visual changes queue immediate toolbar layout");
+        DispatchMessageW(&layout);
+        toolbar->onLayoutFlush = {};
+        Check(fake->Compacted(11) && toolbar->compactedAtFlush, "collapse rows before arranging the new viewport");
+        Check(toolbar->layoutFlushes == flushed + 1, "tree notification burst is coalesced into one layout flush");
+        Check(!PeekMessageW(&layout, hwnd, dt::ToolbarLayout, dt::ToolbarLayout, PM_REMOVE), "our layout pass cannot enqueue itself repeatedly");
         fake->ResetToolbarRow(11);
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->Compacted(11), "hide-only maintains compaction after tab reset");
+        fake->ReAdd(6); // Leave a layout notification pending while disabling.
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && !fake->Compacted(11) && !fake->Compacted(12), "hide-only restores layout when disabled");
+        flushed = toolbar->layoutFlushes;
+        Pump();
+        Check(toolbar->layoutFlushes == flushed && !fake->Compacted(11), "queued refresh cannot reapply disabled toolbar policy");
+        toolbar->failLayoutFlush = true;
+        Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == -1, "viewport arrange failure is reported");
+        Check(SendMessageW(hwnd, dt::Failure, dt::Toolbar | (static_cast<WPARAM>(dt::FailureStage) << 32), 0) == dt::AdjustLayout,
+              "viewport flush failure includes the layout stage");
+        toolbar->failLayoutFlush = false;
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore after arrange failure");
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts | dt::RevealToolbar | dt::Chat, 0) == 0, "enable hover with hidden toolbar and Chat preference");
         Check(fake->Compacted(11) && fake->Compacted(12), "compact reserved rows for both hidden bar hosts without changing app-hidden bookmarks visibility");
         fake->FailLayoutRestore(11, true);

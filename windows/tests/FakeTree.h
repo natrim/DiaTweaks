@@ -21,7 +21,10 @@ public:
     FakeElement* parent = nullptr;
     bool headerPeers = false;
     dt::HoverSample hoverSample{true};
-    bool compacted = false, failLayoutRestore = false;
+    bool compacted = false, failLayoutRestore = false, failLayoutFlush = false;
+    unsigned layoutFlushes = 0;
+    bool compactedAtFlush = false;
+    std::function<void()> onLayoutFlush;
     bool failPageStyle = false, inlineSidebar = true;
     unsigned pageFlags = 0;
     const wchar_t* name = L"";
@@ -227,6 +230,7 @@ public:
         }
         *out = element; (*out)->AddRef(); return S_OK;
     }
+    FakeElement* ToolbarElement() { return elements.at(11).get(); }
     void ResetToolbarRow(InstanceHandle node) { elements.at(node)->compacted = false; }
     FakeElement* PageElement() {
         IInspectable* object = nullptr;
@@ -269,6 +273,15 @@ inline std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
 }
 inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region, bool) noexcept {
     return region ? static_cast<FakeElement*>(region.get())->hoverSample : HoverSample{};
+}
+
+inline HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& region) noexcept {
+    if (!region) return S_OK;
+    auto element = static_cast<FakeElement*>(region.get());
+    ++element->layoutFlushes;
+    element->compactedAtFlush = element->compacted;
+    if (element->onLayoutFlush) element->onLayoutFlush();
+    return element->failLayoutFlush ? E_FAIL : S_OK;
 }
 
 inline HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& region, bool compact) noexcept {

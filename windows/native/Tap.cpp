@@ -48,6 +48,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     std::atomic<int> state{0}; // 0 = replaying, 1 = ready, -1 = subscription failed
     std::atomic<unsigned> added{0}, eligible{0};
     std::atomic<bool> stopping{false};
+    std::atomic<bool> toolbarLayoutEnabled{false}, toolbarLayoutPending{false};
     IUnknown* site = nullptr;
     IVisualTreeService* service = nullptr;
     IXamlDiagnostics* diagnostics = nullptr;
@@ -80,7 +81,21 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         }
         return available;
     }
-    void UpdateHover() {
+    void QueueToolbarLayout() noexcept {
+        if (stopping || !toolbarLayoutEnabled) return;
+        if (toolbarLayoutPending.exchange(true)) return;
+        if (!PostMessageW(window, dt::ToolbarLayout, 0, 0)) toolbarLayoutPending = false;
+    }
+    HRESULT FlushToolbarLayouts() noexcept {
+        HRESULT result = S_OK;
+        for (auto& [node, button] : buttons) if (button.target == dt::Toolbar && !button.detached) {
+            (void)node;
+            auto hr = dt::FlushToolbarLayout(button.hoverRegion);
+            if (FAILED(hr)) { button.failure = dt::AdjustLayout; button.error = hr; result = hr; }
+        }
+        return result;
+    }
+    void UpdateHover(bool finishLayout = true) {
         bool ready = EnsureHoverRegions();
         if (hoverAttempts) --hoverAttempts;
         if (!HoverEnabled()) {
@@ -91,6 +106,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return;
         }
         ULONGLONG now = GetTickCount64();
+        bool layoutChanged = false;
         for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && button.hoverRegion) {
             auto previous = button.hover;
             auto sample = dt::ReadToolbarHover(button.hoverRegion, button.hover.revealed);
@@ -100,9 +116,12 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 continue;
             }
             bool owned = button.active;
-            if (Apply(node, button, (flags & button.target) && !reveal)) button.hoverRestored = reveal && owned;
-            else button.hover = previous;
+            if (Apply(node, button, (flags & button.target) && !reveal)) {
+                button.hoverRestored = reveal && owned;
+                layoutChanged = true;
+            } else button.hover = previous;
         }
+        if (layoutChanged && finishLayout) FlushToolbarLayouts();
     }
     static DWORD WINAPI Subscribe(void* context) noexcept {
         auto self = static_cast<Tap*>(context);
@@ -131,6 +150,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (FAILED(hr)) return hr;
         }
         stopping = true;
+        toolbarLayoutEnabled = false;
         KillTimer(window, ScopeTimer);
         KillTimer(window, HoverTimer);
         KillTimer(window, PageTimer);
@@ -161,6 +181,15 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
     LRESULT Message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+        if (msg == dt::ToolbarLayout) {
+            // Keep the pending bit set during the pass: changes caused by our
+            // own measure/arrange must not enqueue an endless refresh loop.
+            struct Complete { std::atomic<bool>& pending; ~Complete() { pending = false; } } complete{toolbarLayoutPending};
+            if (stopping || !(flags & dt::Toolbar)) return 0;
+            UpdateHover(false);
+            if (flags & dt::PageFlags) dt::TickPages(pages);
+            return FlushToolbarLayouts();
+        }
         if (msg == WM_TIMER && wp == PageTimer) {
             if (stopping) return 0;
             dt::TickPages(pages);
@@ -214,10 +243,12 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::PageOwned) return dt::OwnedPages(pages, static_cast<unsigned>(wp));
         if (msg == dt::PageError) return dt::PagesError(pages);
         if (msg == dt::PageNode) {
+            if (flags & dt::Toolbar) UpdateHover(false);
             auto object = Instance(static_cast<InstanceHandle>(wp));
             if (object) dt::ObservePage(pages, static_cast<InstanceHandle>(wp), object.get());
             dt::TickPages(pages);
             pageAttempts = 25; SetTimer(window, PageTimer, 200, nullptr);
+            QueueToolbarLayout();
             dt::RefreshSettings();
             return 0;
         }
@@ -311,7 +342,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::Configure) {
             if (messageDepth > 1) return -1;
             if (wp & ~dt::All) return -1;
+            unsigned previous = flags;
             flags = static_cast<unsigned>(wp);
+            toolbarLayoutEnabled = (flags & dt::Toolbar) != 0;
             if (!HoverEnabled()) {
                 for (auto& [node, button] : buttons) {
                     (void)node;
@@ -339,6 +372,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
                 else ++it;
             }
             if (FAILED(dt::ConfigurePages(pages, flags))) ++failures;
+            if (((previous | flags) & dt::Toolbar) && FAILED(FlushToolbarLayouts())) ++failures;
             if ((flags & dt::PageFlags) && !SetTimer(window, PageTimer, 200, nullptr)) ++failures;
             else if (!(flags & dt::PageFlags) && !pageAttempts) KillTimer(window, PageTimer);
             dt::RefreshSettings();
@@ -631,6 +665,9 @@ public:
     }
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation, VisualElement element, VisualMutationType mutation) noexcept override {
         if (stopping) return S_OK;
+        // Even unnamed page presenters can be replaced during a tab switch.
+        // Coalesce their notifications and marshal all layout work to the UI.
+        struct LayoutNotice { Tap* self; ~LayoutNotice() { self->QueueToolbarLayout(); } } notice{this};
         // Only queue handles. All property access and layout changes happen later on the UI thread.
         UINT msg = mutation == Remove ? dt::RemoveNode : dt::AddNode;
         dt::Target namedTarget = dt::None;

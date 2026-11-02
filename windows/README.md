@@ -368,3 +368,12 @@ Square corners also repairs a remaining bottom-left/bottom-right RectangleClip
 radius after the XAML corner changes. Diagnostics report `ownedClipCorners` in
 addition to XAML property ownership. The existing clip object and its geometry
 remain in place, and replaced tab clips are restored before being released.
+
+Hidden-toolbar viewport updates are triggered by coalesced XAML visual-tree
+changes, including unnamed presenter replacements during tab switches. The UI
+pass reapplies toolbar compaction before page styling, refreshes the current
+VariantHost, invalidates its bounded presenter subtree and completes layout
+once for the batch. Hover reveal/hide transitions also flush layout. The
+80/200ms watcher remains a fallback; outer margins still belong only to
+Edge-to-edge. Native Chromium page painting is outside these XAML layout tests
+and needs verification in Dia.

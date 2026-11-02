@@ -24,6 +24,7 @@ inline constexpr LRESULT DetachProtocolVersion = 10;
 inline constexpr UINT Detach = WM_APP + 18, DetachComplete = WM_APP + 19;
 inline constexpr UINT PageNode = WM_APP + 20, PageQuery = WM_APP + 21, PageOwned = WM_APP + 22, PageError = WM_APP + 23;
 inline constexpr UINT LayoutReport = WM_APP + 24;
+inline constexpr UINT ToolbarLayout = WM_APP + 25;
 inline constexpr ULONG_PTR LayoutMagic = 0x44544c31;
 enum FailureField : unsigned { FailureStage, FailureError, FailureMetadata, FailureSource };
 enum Stage : unsigned {

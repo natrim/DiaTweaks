@@ -276,3 +276,36 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
         return FAILED(rows)?rows:containers;
     } catch (...) { return to_hresult(); }
 }
+
+HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
+    if (!value) return S_OK;
+    try {
+        auto region = static_cast<Region*>(value.get());
+        auto pane = region->pane.get();
+        if (!pane || !pane.XamlRoot()) return S_OK;
+        // A tab can replace VariantHost or its native-surface presenter while
+        // keeping the toolbar alive. Never flush the previous tab's page.
+        auto page = Named(pane, L"VariantHost");
+        region->page = page;
+        if (page) {
+            struct Item { DependencyObject node; unsigned depth; };
+            std::vector<Item> queue{{page, 0}};
+            for (size_t i = 0; i < queue.size() && i < 96; ++i) {
+                auto item = queue[i];
+                if (auto element = item.node.try_as<FrameworkElement>()) {
+                    element.InvalidateMeasure();
+                    element.InvalidateArrange();
+                }
+                if (item.depth >= 5) continue;
+                int count = VisualTreeHelper::GetChildrenCount(item.node);
+                for (int j = 0; j < count && queue.size() < 96; ++j)
+                    queue.push_back({VisualTreeHelper::GetChild(item.node, j), item.depth + 1});
+            }
+        }
+        // Visibility and row policies have already been applied as a batch.
+        // Arrange the current page now instead of waiting for the polling tick
+        // to catch up with the newly inserted native viewport.
+        pane.UpdateLayout();
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
