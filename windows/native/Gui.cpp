@@ -305,12 +305,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) noe
 }
 HWND CreatePanel(Panel& panel) {
     panel.dpi = GetDpiForSystem();
-    INITCOMMONCONTROLSEX common{sizeof(common), ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES};
-    if (!InitCommonControlsEx(&common)) return nullptr;
+    INITCOMMONCONTROLSEX common{sizeof(common), ICC_PROGRESS_CLASS};
+    if (!InitCommonControlsEx(&common)) { panel.creationError = L"InitCommonControlsEx failed; Windows error " + std::to_wstring(GetLastError()) + L"."; return nullptr; }
     WNDCLASSW cls{}; cls.lpfnWndProc = WindowProc; cls.hInstance = GetModuleHandleW(nullptr);
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     cls.hbrBackground = GetSysColorBrush(COLOR_BTNFACE); cls.lpszClassName = GuiClass;
-    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
+    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) { panel.creationError = L"RegisterClass failed; Windows error " + std::to_wstring(GetLastError()) + L"."; return nullptr; }
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     int width = panel.Scale(900), height = panel.Scale(680);
