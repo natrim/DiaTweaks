@@ -1,4 +1,5 @@
 #include "FakeTree.h"
+#include <thread>
 
 int main() {
     try {
@@ -218,6 +219,24 @@ int main() {
         Check(SendMessageW(hwnd, dt::Stats, dt::MissingVisibility, 0) == 1, "missing visibility is reported");
         fake->ignoreWrites = false;
         fake->nodes.at(1).omitVisibility = false;
+        Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0,"enable early toolbar policy");
+        fake->nodes.emplace(21,FakeTree::Node{L"",L"Visible",false,false,L"NavigationBarHost",L"ContentControl"});
+        fake->ReAdd(21);
+        Check(fake->nodes.at(21).value==L"Collapsed","live UI host collapses before queued discovery or first layout");
+        fake->ShowToolbarNatively(21);
+        Check(fake->nodes.at(21).value==L"Collapsed","native visible pulse is repaired before returning to layout");
+        Pump();
+        fake->nodes.emplace(22,FakeTree::Node{L"",L"Visible",false,false,L"NavigationBarHost",L"ContentControl"});
+        fake->Hover(22,{true}); // Materialize on the UI thread before notification.
+        HRESULT workerResult=E_FAIL;
+        std::thread replay([&] { workerResult=fake->Publish(22); }); replay.join();
+        Check(SUCCEEDED(workerResult) && fake->nodes.at(22).value==L"Visible","worker host notification stays marshalled");
+        Pump();
+        Check(fake->nodes.at(22).value==L"Collapsed","queued worker discovery applies on UI thread");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0)==0,"disable early toolbar policy");
+        fake->ShowToolbarNatively(21);
+        Check(fake->nodes.at(21).value==L"Visible","disabled policy permits normal toolbar visibility");
+        fake->Drop(21); fake->Drop(22); Pump();
         Check(SendMessageW(hwnd, dt::Configure, dt::Spaces, 0) == 0, "own a control before detach");
         fake->onRead = [&] {
             Check(FAILED(static_cast<HRESULT>(SendMessageW(hwnd, dt::Detach, 0, 0))), "nested detach is blocked while another controller request runs");

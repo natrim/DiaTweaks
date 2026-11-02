@@ -55,6 +55,10 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     HWND window = nullptr;
     dt::PreferencesStore preferences;
     unsigned flags = 0, messageDepth = 0;
+    DWORD dispatcherThread = 0;
+    unsigned earlyToolbarAttempts = 0, visibilityRepairs = 0;
+    std::atomic<unsigned> deferredToolbarAdds{0};
+    bool applyingPolicy = false;
     std::wstring changeError;
     unsigned inspected = 0, failedQueries = 0, missingIds = 0, namedMatches = 0;
     HRESULT lastQueryError = S_OK;
@@ -70,12 +74,38 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
     bool ShouldHide(Button const& button) const {
         return (flags & button.target) != 0 && !(HoverEnabled() && (button.target & dt::ToolbarParts) && button.hover.revealed);
     }
+    std::shared_ptr<void> TrackToolbar(IInspectable* object) {
+        auto region=dt::TrackToolbar(object);
+        if (region) dt::WatchToolbarPolicy(region,{this,[](void* context) {
+            auto self=static_cast<Tap*>(context);
+            if (self->stopping || !(self->flags & dt::Toolbar)) return;
+            if (self->messageDepth || self->applyingPolicy) { self->QueueToolbarLayout(); return; }
+            struct Depth { unsigned& value; Depth(unsigned& n):value(n) { ++value; } ~Depth() { --value; } } depth{self->messageDepth};
+            ++self->visibilityRepairs;
+            self->UpdateHover(false);
+            self->QueueToolbarLayout();
+        }});
+        return region;
+    }
+    bool TryLiveToolbar(UINT msg, InstanceHandle node, dt::Target target=dt::None) noexcept {
+        if (!toolbarLayoutEnabled || GetCurrentThreadId()!=dispatcherThread || messageDepth) return false;
+        try {
+            if (msg==dt::RemoveNode) {
+                auto it=buttons.find(node);
+                if (it==buttons.end() || !(it->second.target & dt::ToolbarParts)) return false;
+            }
+            struct Depth { unsigned& value; Depth(unsigned& n):value(n) { ++value; } ~Depth() { --value; } } depth{messageDepth};
+            if (msg==dt::RemoveNode) Message(window,msg,static_cast<WPARAM>(node),0);
+            else { ++earlyToolbarAttempts; Discover(node,target,dt::Family::Host); }
+            return true;
+        } catch (...) { return false; }
+    }
     bool EnsureHoverRegions() {
         bool available = false;
-        for (auto& [node, button] : buttons) if (button.target & dt::ToolbarParts) {
+        for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && !button.detached) {
             if (!button.hoverRegion) {
                 auto object = button.instance ? button.instance : Instance(node);
-                if (object) button.hoverRegion = dt::TrackToolbar(object.get());
+                if (object) button.hoverRegion = TrackToolbar(object.get());
             }
             if (button.target == dt::Toolbar && button.hoverRegion) available = true;
         }
@@ -100,14 +130,14 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (hoverAttempts) --hoverAttempts;
         if (!HoverEnabled()) {
             if (flags & dt::Toolbar) {
-                for (auto& [node, button] : buttons) if (button.target & dt::ToolbarParts) Apply(node, button, ShouldHide(button));
+                for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && !button.detached) Apply(node, button, ShouldHide(button));
             } else if (ready || !hoverAttempts) KillTimer(window, HoverTimer);
             if (ready) dt::RefreshSettings();
             return;
         }
         ULONGLONG now = GetTickCount64();
         bool layoutChanged = false;
-        for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && button.hoverRegion) {
+        for (auto& [node, button] : buttons) if ((button.target & dt::ToolbarParts) && !button.detached && button.hoverRegion) {
             auto previous = button.hover;
             auto sample = dt::ReadToolbarHover(button.hoverRegion, button.hover.revealed);
             bool reveal = button.hover.Update(sample, now);
@@ -229,7 +259,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (msg == dt::LayoutReport) {
             std::wstring report = dt::PagesLayoutReport(pages);
             report += L"\nTOOLBAR LAYOUT (read-only)\n";
-            for (auto const& [node, button] : buttons) if (button.target == dt::Toolbar) {
+            report += L"Toolbar early policy: inlineAttempts="+std::to_wstring(earlyToolbarAttempts)+
+                L" visibilityRepairs="+std::to_wstring(visibilityRepairs)+L" deferredAdds="+std::to_wstring(deferredToolbarAdds.load())+L"\n";
+            for (auto const& [node, button] : buttons) if (button.target == dt::Toolbar && !button.detached) {
                 auto object = button.instance ? button.instance : Instance(node);
                 if (object) report += dt::LayoutSnapshot(object.get());
                 report += dt::ToolbarLayoutTrace(button.hoverRegion);
@@ -513,14 +545,17 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         if (button.target == namedTarget && (family == dt::Family::Host || !id || id->MetadataBits == IsValueNull || dt::Text(id->Value).empty())) ++namedMatches;
         if (button.target & dt::ToolbarParts) {
             auto object = Instance(node);
-            if (object) button.hoverRegion = dt::TrackToolbar(object.get());
+            if (object) button.hoverRegion = TrackToolbar(object.get());
             if (!button.hoverRegion) { hoverAttempts = 50; SetTimer(window, HoverTimer, 80, nullptr); }
         }
         auto [it, inserted] = buttons.emplace(node, button);
-        if (inserted && (flags & button.target)) Apply(node, it->second, true);
+        if (inserted && HoverEnabled() && (button.target & dt::ToolbarParts) && button.hoverRegion)
+            it->second.hover.Update(dt::ReadToolbarHover(button.hoverRegion,false),GetTickCount64());
+        if (inserted && (flags & button.target)) Apply(node, it->second, ShouldHide(it->second));
         if (inserted) dt::RefreshSettings();
     }
     bool Apply(InstanceHandle node, Button& button, bool enable) {
+        struct Applying { bool& value; bool previous; Applying(bool& v):value(v),previous(v) { value=true; } ~Applying() { value=previous; } } applying{applyingPolicy};
         auto fail = [&](dt::Stage stage, HRESULT error) {
             button.failure = stage; button.error = error; return false;
         };
@@ -632,6 +667,7 @@ public:
         hr = value->QueryInterface(__uuidof(IXamlDiagnostics), reinterpret_cast<void**>(&diagnostics));
         if (FAILED(hr)) { service->Release(); service = nullptr; return hr; }
         site = value; site->AddRef();
+        dispatcherThread=GetCurrentThreadId();
         pages = dt::CreatePages({this, [](void* context, IInspectable* object, wchar_t const* property) {
             auto self = static_cast<Tap*>(context);
             InstanceHandle node = 0;
@@ -670,7 +706,9 @@ public:
         // Even unnamed page presenters can be replaced during a tab switch.
         // Coalesce their notifications and marshal all layout work to the UI.
         struct LayoutNotice { Tap* self; ~LayoutNotice() { self->QueueToolbarLayout(); } } notice{this};
-        // Only queue handles. All property access and layout changes happen later on the UI thread.
+        // Live host callbacks on this UI thread can collapse a replacement
+        // before its first measure. Replay/worker callbacks stay marshalled.
+        if (mutation==Remove && TryLiveToolbar(dt::RemoveNode,element.Handle)) return S_OK;
         UINT msg = mutation == Remove ? dt::RemoveNode : dt::AddNode;
         dt::Target namedTarget = dt::None;
         dt::Family family = dt::Family::Button;
@@ -690,6 +728,7 @@ public:
                 namedTarget = dt::Identify(dt::Text(element.Name), dt::Family::Button, true);
             }
             ++eligible;
+            if ((namedTarget & dt::ToolbarParts) && toolbarLayoutEnabled && !TryLiveToolbar(dt::AddNode,element.Handle,namedTarget)) ++deferredToolbarAdds;
         }
         return PostMessageW(window, msg, static_cast<WPARAM>(element.Handle), namedTarget | (static_cast<LPARAM>(family) << 32)) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
     }

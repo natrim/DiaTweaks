@@ -86,6 +86,14 @@ struct Region {
     std::shared_ptr<void> nativeGuard = dt::CreateNativeViewportGuard();
     FrameworkElement::LayoutUpdated_revoker nativeLayout;
     bool watchingNative = false, updatingNative = false;
+    bool hiddenPolicy = false, watchingVisibility = false, repairingLayout = false;
+    long long visibilityToken = 0;
+    dt::ToolbarPolicyApi policy{};
+    unsigned layoutWrites = 0;
+    ~Region() {
+        try { if (watchingVisibility) if (auto host=owner.get()) host.UnregisterPropertyChangedCallback(UIElement::VisibilityProperty(),visibilityToken); }
+        catch (...) {}
+    }
     Microsoft::UI::Xaml::Media::CompositionTarget::Rendering_revoker rendering;
     bool tracing = false;
     ULONGLONG traceUntil = 0;
@@ -158,7 +166,7 @@ std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
             if (element && Named(current, L"VariantHost") && Named(current, L"NavigationBarHost")) { pane = element; break; }
         }
         if (!pane) return {};
-        auto toolbar = Named(pane, L"NavigationBarHost");
+        auto toolbar = host.Name()==L"NavigationBarHost" ? host : Named(pane, L"NavigationBarHost");
         if (!toolbar) return {};
         // Validate the window mapping before offering the switch.
         auto hwnd = Microsoft::UI::GetWindowFromWindowId(host.XamlRoot().ContentIslandEnvironment().AppWindowId());
@@ -171,6 +179,27 @@ std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
         return region;
     } catch (...) { return {}; }
 }
+void dt::WatchToolbarPolicy(std::shared_ptr<void> const& value, ToolbarPolicyApi api) noexcept {
+    if (!value) return;
+    auto region=std::static_pointer_cast<Region>(value);
+    region->policy=api;
+    if (region->watchingVisibility) return;
+    try {
+        auto host=region->owner.get();
+        if (!host) return;
+        std::weak_ptr<Region> weak=region;
+        region->visibilityToken=host.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(),
+            [weak](auto const&,auto const&) noexcept {
+                if (auto current=weak.lock(); current && current->hiddenPolicy && current->policy.changed) {
+                    try {
+                        auto item=current->owner.get();
+                        if (item && item.Visibility()!=Visibility::Collapsed) current->policy.changed(current->policy.context);
+                    } catch (...) { current->traceError=to_hresult(); }
+                }
+            });
+        region->watchingVisibility=true;
+    } catch (...) { region->traceError=to_hresult(); }
+}
 namespace {
 void UpdateNativeViewport(Region& region, bool discover) noexcept {
     if (region.updatingNative) return;
@@ -178,7 +207,7 @@ void UpdateNativeViewport(Region& region, bool discover) noexcept {
     struct Done { bool& value; ~Done() { value=false; } } done{region.updatingNative};
     try {
         auto pane=region.pane.get(), toolbar=region.toolbar.get();
-        if (!pane || !toolbar || !pane.XamlRoot() || toolbar.Visibility()!=Visibility::Collapsed) {
+        if (!region.hiddenPolicy || !pane || !toolbar || !pane.XamlRoot() || toolbar.Visibility()!=Visibility::Collapsed) {
             dt::SuspendNativeViewportGuard(region.nativeGuard); return;
         }
         auto page=Named(pane,L"VariantHost");
@@ -208,7 +237,22 @@ void WatchNativeViewport(std::shared_ptr<Region> const& region) {
     if (!pane) return;
     std::weak_ptr<Region> weak=region;
     region->nativeLayout=pane.LayoutUpdated(auto_revoke,[weak](Object const&,Object const&) noexcept {
-        if (auto current=weak.lock()) UpdateNativeViewport(*current,false);
+        auto current=weak.lock();
+        if (!current || current->repairingLayout) return;
+        current->repairingLayout=true;
+        struct Done { bool& value; ~Done() { value=false; } } done{current->repairingLayout};
+        try {
+            auto host=current->owner.get(), frame=current->pane.get();
+            if (current->hiddenPolicy && host && frame && Inside(host,frame) && host.Visibility()==Visibility::Collapsed) {
+                auto before=current->layoutWrites;
+                auto hr=dt::CompactToolbarRow(current,true);
+                if (FAILED(hr)) current->traceError=hr;
+                // Complete a repaired row before the frame is presented. A
+                // steady layout does not force another measure/arrange pass.
+                if (current->layoutWrites!=before) frame.UpdateLayout();
+            }
+            UpdateNativeViewport(*current,false);
+        } catch (...) { current->traceError=to_hresult(); }
     });
     region->watchingNative=true;
 }
@@ -284,8 +328,8 @@ HRESULT CompactContainer(Region& region, FrameworkElement const& item) {
     if (!setHeight && !setMinimum) return S_OK;
     auto lease=std::make_unique<ElementLease>(); lease->element=item; lease->height=height; lease->minimum=minimum;
     auto target=lease.get(); region.containers.push_back(std::move(lease));
-    if (setHeight) { target->ownsHeight=true; item.Height((std::numeric_limits<double>::quiet_NaN)()); }
-    if (setMinimum) { target->ownsMinimum=true; item.MinHeight(0); }
+    if (setHeight) { ++region.layoutWrites; target->ownsHeight=true; item.Height((std::numeric_limits<double>::quiet_NaN)()); }
+    if (setMinimum) { ++region.layoutWrites; target->ownsMinimum=true; item.MinHeight(0); }
     return S_OK;
 }
 HRESULT CompactRow(Region& region, RowDefinition const& row) {
@@ -304,14 +348,15 @@ HRESULT CompactRow(Region& region, RowDefinition const& row) {
         (setMinimum && !minimum.try_as<Windows::Foundation::IReference<double>>())) return S_OK;
     auto lease=std::make_unique<RowLease>(); lease->row=row; lease->height=height; lease->minimum=minimum;
     auto target=lease.get(); region.rows.push_back(std::move(lease));
-    if (setHeight) { target->ownsHeight=true; row.Height({1,GridUnitType::Auto}); }
-    if (setMinimum) { target->ownsMinimum=true; row.MinHeight(0); }
+    if (setHeight) { ++region.layoutWrites; target->ownsHeight=true; row.Height({1,GridUnitType::Auto}); }
+    if (setMinimum) { ++region.layoutWrites; target->ownsMinimum=true; row.MinHeight(0); }
     return S_OK;
 }
 }
 void dt::DetachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
     if (!value) return;
     auto region=static_cast<Region*>(value.get());
+    region->hiddenPolicy=false;
     dt::SuspendNativeViewportGuard(region->nativeGuard);
     region->nativeLayout.revoke(); region->watchingNative=false;
 }
@@ -319,6 +364,7 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
     if (!value) return S_OK;
     auto region=static_cast<Region*>(value.get());
     try {
+        region->hiddenPolicy=compact;
         if (!compact) {
             DetachToolbarViewport(value);
             auto row=RestoreExcept(region->rows,[](auto const&){return false;});

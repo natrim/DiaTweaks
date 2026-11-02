@@ -25,6 +25,7 @@ public:
     unsigned layoutFlushes = 0, viewportDetaches = 0;
     bool compactedAtFlush = false;
     std::function<void()> onLayoutFlush;
+    dt::ToolbarPolicyApi toolbarPolicy{};
     bool failPageStyle = false, inlineSidebar = true;
     unsigned pageFlags = 0;
     const wchar_t* name = L"";
@@ -113,6 +114,12 @@ public:
     std::function<void()> onRead;
     bool ignoreWrites = false;
     bool failRegister = false;
+    HRESULT Publish(InstanceHandle canonical) { return Notify(canonical,Add); }
+    void ShowToolbarNatively(InstanceHandle canonical) {
+        nodes.at(canonical).value=L"Visible";
+        auto element=elements.at(canonical).get();
+        if (element->compacted && element->toolbarPolicy.changed) element->toolbarPolicy.changed(element->toolbarPolicy.context);
+    }
     void Drop(InstanceHandle canonical) {
         InstanceHandle handle = current.count(canonical) ? current.at(canonical) : canonical;
         invalid.insert(handle); detached.insert(canonical);
@@ -276,6 +283,9 @@ inline bool dt::IsSidebarHeader(IInspectable* object) noexcept {
 inline std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
     object->AddRef();
     return std::shared_ptr<void>(static_cast<FakeElement*>(object), [](void* value) { static_cast<FakeElement*>(value)->Release(); });
+}
+inline void dt::WatchToolbarPolicy(std::shared_ptr<void> const& value, ToolbarPolicyApi api) noexcept {
+    if (value) static_cast<FakeElement*>(value.get())->toolbarPolicy=api;
 }
 inline std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const&) { return L"fake viewport timing trace\n"; }
 inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region, bool) noexcept {

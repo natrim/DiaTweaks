@@ -408,3 +408,20 @@ diagnostics include the guarded-window count and prevented resize count.
 Win32 integration tests cover actual child windows, repeated stale native
 resizes, real target resizing, release/re-arm, destruction and another window
 thread. These tests do not reproduce Chromium's rendering or Dia itself.
+
+### Early toolbar layout policy
+
+The follow-up trace showed full-sized native windows while VariantHost itself
+briefly moved down by 40 logical pixels. Live toolbar-host add/remove callbacks
+now apply immediately when they are already on the session's UI thread and
+outside another policy operation. Worker/replay callbacks remain queued. The
+queued add is retained to retry region discovery after a parent finishes attaching.
+A scoped visibility callback repairs plain native Visible pulses synchronously
+using the existing binding/source checks. Reveal and disable disarm that callback
+policy before restoring the original value.
+
+A guarded LayoutUpdated watcher also repairs changed fixed row/container heights;
+it completes an extra layout only after an actual compaction write. Detached
+toolbar snapshots remain available for restore but are excluded from active hover
+and viewport updates and from the active toolbar report. Diagnostics include
+inline host attempts, visibility repairs and deferred host adds.
