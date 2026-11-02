@@ -76,6 +76,27 @@ int main() {
     auto stripped = dt::page::Strip({6, 55, -6, 8});
     Check(stripped.left == 0 && stripped.top == 55 && stripped.right == -6 && stripped.bottom == 0, "remove only small positive page padding");
     Check(dt::page::Gap(6.01) == 6 && dt::page::Gap(55) == 0 && dt::page::Gap(-6) == 0, "stable padding gaps preserve toolbar and non-padding offsets");
+    // Sanitized topology of the reported WinUI layout: rounded Grid at depth 1,
+    // rounded Border at 4, outer inset Grid at 11, wider sidebar shell outside.
+    dt::page::Box pageBox{200, 4, 1200, 792};
+    dt::page::FrameCandidate ancestors[12]{};
+    for (auto& candidate : ancestors) candidate.bounds = pageBox;
+    ancestors[10].margin = {0, 4, 4, 4};
+    ancestors[11].bounds = {0, 0, 1404, 800};
+    Check(dt::page::FrameCount(pageBox, ancestors) == 11, "include rounded Grid and Border through depth 11 inset wrapper");
+    ancestors[10].margin = {};
+    Check(dt::page::FrameCount(pageBox, ancestors) == 11, "wider sidebar shell stops the walk without an inset");
+    ancestors[1].margin = {0, 4, 4, 4};
+    Check(dt::page::FrameCount(pageBox, ancestors) == 2, "outer inset is included but ancestors beyond it are excluded");
+    Check(dt::page::FrameAncestor({200, 44, 1200, 752}, {200, 4, 1200, 792}), "revealed toolbar remains inside frame scope");
+    Check(!dt::page::FrameAncestor(pageBox, {0, 0, 1404, 800}), "sidebar and window shell are excluded");
+    auto topOnly = dt::page::FrameMargin({0, 4, 4, 4}, false, true);
+    Check(topOnly.left == 0 && topOnly.top == 0 && topOnly.right == 4 && topOnly.bottom == 4, "hidden toolbar removes only the real top inset");
+    auto edgeMargin = dt::page::FrameMargin({0, 4, 4, 4}, true, false);
+    Check(edgeMargin.left == 0 && edgeMargin.top == 0 && edgeMargin.right == 0 && edgeMargin.bottom == 0, "edge layout removes actual outer margin without shifting left");
+    auto nativeMargin = dt::page::FrameMargin({0, 4, 4, 4}, false, false);
+    Check(nativeMargin.top == 4 && nativeMargin.right == 4 && nativeMargin.bottom == 4, "disabled modes preserve original insets");
+    Check(dt::page::HasInset({0, 4, 4, 4}) && !dt::page::HasInset({0, 40, -4, 0}), "walk stops at a small native inset only");
     auto corners = dt::page::Square({8, 9, 10, 11}, true, false);
     Check(corners.tl == 0 && corners.bl == 0 && corners.tr == 9 && corners.br == 10, "square only sidebar-facing corners");
     corners = dt::page::Square({8, 9, 10, 11}, false, true);

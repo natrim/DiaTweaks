@@ -132,6 +132,7 @@ template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject co
         page.leases.push_back({object, property, local, object.GetValue(property), box_value(desired), feature, Equal<T>});
         lease = &page.leases.back();
     }
+    lease->feature = feature;
     auto desiredBox = box_value(desired);
     if (Equal<T>(object.GetValue(property), desiredBox) && lease->Ours() && Equal<T>(lease->applied, desiredBox)) return S_OK;
     auto previous = lease->applied;
@@ -153,6 +154,31 @@ HRESULT Restore(PageFrame& page) {
     if (SUCCEEDED(error)) page.leases.clear();
     return error;
 }
+dt::page::Box Plain(Rect a) { return {a.X, a.Y, a.Width, a.Height}; }
+DependencyProperty RadiusProperty(FrameworkElement const& element) {
+    if (element.try_as<Border>()) return Border::CornerRadiusProperty();
+    if (element.try_as<Grid>()) return Grid::CornerRadiusProperty();
+    if (element.try_as<ContentPresenter>()) return ContentPresenter::CornerRadiusProperty();
+    return nullptr;
+}
+std::vector<FrameworkElement> Frames(PageFrame& page, FrameworkElement const& host, UIElement const& root) {
+    auto frames = Elements(host, 96, 5);
+    std::vector<FrameworkElement> ancestors;
+    std::vector<dt::page::FrameCandidate> candidates;
+    DependencyObject parent = VisualTreeHelper::GetParent(host);
+    // The toolbar/page pane is inside the rounded Border and inset Grid.
+    // Include those ancestors, stopping at the outer inset or a wider app shell.
+    for (unsigned i = 0; parent && parent != root && i < 20; ++i, parent = VisualTreeHelper::GetParent(parent)) {
+        auto element = parent.try_as<FrameworkElement>();
+        if (!element) continue;
+        auto margin = Baseline<Thickness>(page, element, FrameworkElement::MarginProperty());
+        ancestors.push_back(element);
+        candidates.push_back({Plain(Bounds(element, root)), Plain(margin)});
+    }
+    auto count = dt::page::FrameCount(Plain(Bounds(host, root)), candidates);
+    frames.insert(frames.end(), ancestors.begin(), ancestors.begin() + count);
+    return frames;
+}
 bool Initialize(PageFrame& page) {
     auto host = page.host.get();
     if (!host || !host.XamlRoot() || host.ActualWidth() <= 0 || host.ActualHeight() <= 0) return false;
@@ -161,28 +187,37 @@ bool Initialize(PageFrame& page) {
         for (unsigned i = 0; node && i < 12; ++i, node = VisualTreeHelper::GetParent(node))
             if (auto element = node.try_as<FrameworkElement>(); element && Named(node, L"NavigationBarHost") && Named(node, L"VariantHost") == host) { page.pane = element; break; }
     }
-    return !!page.pane.get();
+    if (!page.pane.get()) return false;
+    page.corners = false;
+    for (auto const& element : Frames(page, host, host.XamlRoot().Content()))
+        if (auto property = RadiusProperty(element); property &&
+            dt::page::HasRadius(Plain(Baseline<CornerRadius>(page, element, property)))) page.corners = true;
+    return true;
 }
 HRESULT Apply(State& state, PageFrame& page) {
-    if (page.detached || !(state.flags & dt::EdgeToEdge)) return Restore(page);
+    if (page.detached) return Restore(page);
+    bool edge = (state.flags & dt::EdgeToEdge) != 0;
+    bool hiddenToolbar = (state.flags & dt::Toolbar) != 0;
+    if (!edge && !hiddenToolbar) {
+        auto hr = Restore(page);
+        page.ready = Initialize(page);
+        return hr;
+    }
     page.ready = Initialize(page);
     if (!page.ready) return S_OK;
-    auto host = page.host.get(), pane = page.pane.get();
+    auto host = page.host.get();
     auto root = host.XamlRoot().Content();
     auto rootElement = root.try_as<FrameworkElement>();
     if (!rootElement) { page.ready = false; return S_OK; }
     auto frame = Bounds(host, root);
     if (frame.Width <= 0 || frame.Height <= 0) { page.ready = false; return S_OK; }
-    auto frames = Elements(host, 96, 5);
+    auto frames = Frames(page, host, root);
     for (auto const& item : frames) {
         auto type = get_class_name(item);
         auto rect = Bounds(item, root);
         if ((std::wstring_view(type).find(L"Chat") != std::wstring_view::npos || std::wstring_view(type).find(L"Assistant") != std::wstring_view::npos) &&
             rect.Width >= frame.Width * .9 && rect.Height >= frame.Height * .9) { page.ready = false; return Restore(page); }
     }
-    DependencyObject parent = VisualTreeHelper::GetParent(host);
-    for (unsigned i = 0; parent && parent != pane && i < 8; ++i, parent = VisualTreeHelper::GetParent(parent))
-        if (auto element = parent.try_as<FrameworkElement>()) frames.push_back(element);
     HRESULT result = S_OK;
     // Replaced tab content must not keep stale frame objects or their overrides.
     for (auto it = page.leases.begin(); it != page.leases.end();) {
@@ -201,17 +236,29 @@ HRESULT Apply(State& state, PageFrame& page) {
     for (auto const& element : frames) {
         auto rect = Bounds(element, root);
         if (rect.Width < frame.Width * .9 || rect.Height < frame.Height * .9) continue;
+        // Let the existing stretch layout resize the native surface. Never
+        // compensate with negative VariantHost margins or move child HWNDs.
+        if (element.HorizontalAlignment() == HorizontalAlignment::Stretch &&
+            element.VerticalAlignment() == VerticalAlignment::Stretch &&
+            std::isnan(element.Width()) && std::isnan(element.Height())) {
+            auto property = FrameworkElement::MarginProperty();
+            auto value = Baseline<Thickness>(page, element, property);
+            auto desired = dt::page::FrameMargin(Plain(value), edge, hiddenToolbar);
+            unsigned owners = (edge ? dt::EdgeToEdge : 0u) | (hiddenToolbar ? dt::Toolbar : 0u);
+            auto hr = Set(state, page, element, property, L"Margin", Native(desired), owners);
+            if (FAILED(hr) && edge) result = hr;
+        }
         DependencyProperty padding{nullptr};
         if (element.try_as<Border>()) padding = Border::PaddingProperty();
         else if (element.try_as<Grid>()) padding = Grid::PaddingProperty();
         else if (element.try_as<ContentPresenter>()) padding = ContentPresenter::PaddingProperty();
         if (padding) {
             auto value = Baseline<Thickness>(page, element, padding);
-            auto hr = Set(state, page, element, padding, L"Padding", Native(dt::page::Strip(Plain(value))), dt::EdgeToEdge);
+            auto hr = Set(state, page, element, padding, L"Padding", edge ? Native(dt::page::Strip(Plain(value))) : value, dt::EdgeToEdge);
             if (FAILED(hr)) result = hr;
         }
     }
-    if (state.writes != before) pane.UpdateLayout();
+    if (state.writes != before) rootElement.UpdateLayout();
     frame = Bounds(host, root);
     auto base = Baseline<Thickness>(page, host, FrameworkElement::MarginProperty());
     auto current = host.Margin();
@@ -236,24 +283,16 @@ HRESULT Apply(State& state, PageFrame& page) {
         if (gapLeft >= -1 && gapLeft <= 24) { left = true; }
         if (gapRight >= -1 && gapRight <= 24) { right = true; }
     }
-    // VariantHost can contain a separately sized native web surface. Expanding
-    // its layout slot with guessed negative margins can only recenter that
-    // surface instead of resizing it. Leave the host's native margin intact.
-    auto marginResult = Set(state, page, host, FrameworkElement::MarginProperty(), L"Margin", base, dt::EdgeToEdge);
-    if (FAILED(marginResult)) result = marginResult;
     frame = Bounds(host, root);
     page.corners = false;
     for (auto const& element : frames) {
         auto rect = Bounds(element, root);
         if (rect.Width < frame.Width * .9 || rect.Height < frame.Height * .9) continue;
-        DependencyProperty corners{nullptr};
-        if (element.try_as<Border>()) corners = Border::CornerRadiusProperty();
-        else if (element.try_as<Grid>()) corners = Grid::CornerRadiusProperty();
-        else if (element.try_as<ContentPresenter>()) corners = ContentPresenter::CornerRadiusProperty();
+        auto corners = RadiusProperty(element);
         if (corners) {
             auto value = Baseline<CornerRadius>(page, element, corners);
             if (dt::page::HasRadius(Plain(value))) page.corners = true;
-            bool square = (state.flags & dt::SquareSidebar) != 0;
+            bool square = edge && (state.flags & dt::SquareSidebar) != 0;
             auto hr = Set(state, page, element, corners, L"CornerRadius", Native(dt::page::Square(Plain(value), square && left, square && right)), dt::SquareSidebar);
             if (FAILED(hr)) result = hr;
         }
@@ -319,7 +358,7 @@ void dt::TickPages(std::shared_ptr<void> const& value) noexcept {
 unsigned dt::QueryPages(std::shared_ptr<void> const& value, unsigned feature) noexcept {
     if (!value) return 0;
     auto& state = *static_cast<State*>(value.get());
-    if (!state.updating) for (auto& page : state.pages) if (!page.ready && !page.detached) {
+    if (!state.updating) for (auto& page : state.pages) if ((!page.ready || !page.corners) && !page.detached) {
         try { page.ready = Initialize(page); } catch (...) { page.ready = false; }
     }
     unsigned matched = 0, verified = 0;

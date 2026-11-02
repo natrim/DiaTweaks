@@ -299,9 +299,10 @@ want to share. Existing output files are not overwritten. Optional parameters:
 
 ## Page frame tweaks (experimental)
 
-**Edge-to-edge web content** removes small positive padding (up to 12 logical
-pixels) from the VariantHost page frame and full-size page chrome. It can expand
-the page over matching small gaps toward the window or an adjacent sidebar.
+**Edge-to-edge web content** removes small positive padding and stretch-layout
+margins (up to 12 logical pixels) from the page chrome. The ancestor search
+includes the rounded Grid, outer Border and inset Grid above the toolbar/page
+pane. The native stretch layout expands the page into these actual insets.
 Large offsets, toolbar space, negative margins and settings/dialog content are
 preserved. Chat/assistant page variants are excluded. Window captions and the
 sidebar itself are not styled.
@@ -337,10 +338,17 @@ model. Inspection does not attach or modify a session.
 
 Guessed negative margins on VariantHost have been removed: an independently
 sized native web surface can be shifted instead of expanded by those margins.
-Edge-to-edge currently changes only supported small XAML padding; full coverage
-of native/compositor-only page frames needs a live layout report. A disabled
-Square corners switch still means no supported rounded XAML frame was found;
-it is not forced on without identifying the actual clip.
+The reported Windows layout exposes CornerRadius on both the inner Grid and
+outer Border; both are styled on the sidebar-facing side. Their generated
+composition clips follow those XAML properties. Rounded frame capability is
+probed before enabling Edge-to-edge, so it does not depend on a prior apply.
+
+Hide toolbar also removes the small top margin on the outer page wrapper, even
+when Edge-to-edge and hover reveal are off. The report showed zero-height toolbar
+rows with a remaining 4-DIP outer margin. Edge-to-edge removes all small outer
+insets; hide-only retains the right and bottom insets. A single property owner
+handles mode transitions and restores the original margin on disable/unload.
+The top inset stays compact during hover reveal to avoid moving the trigger.
 
 Compaction follows Hide toolbar itself, including when Reveal toolbar on hover is off.
 Toolbar compaction now walks through implicit grid rows, supports nested
