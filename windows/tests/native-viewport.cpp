@@ -90,7 +90,7 @@ int main() {
         AttemptSize(view,bad);
         Check(Same(Rect(view,owner),full),"reactivated middle link constrains native size");
         dt::SuspendNativeViewportGuard(guard);
-        SetWindowLongPtrW(view,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(original));
+        SetWindowLongPtrW(view,GWLP_WNDPROC,original);
         Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,full)),"re-arm after removing later subclass");
         guard.reset();
         Check(GetWindowLongPtrW(view,GWLP_WNDPROC)==original,"guard destruction removes active procedure");
