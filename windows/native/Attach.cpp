@@ -13,6 +13,7 @@
 #include "Rules.h"
 #include "SettingsHost.h"
 #include "Processes.h"
+#include "LayoutClient.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -181,6 +182,7 @@ void Help() {
                << L"  DiaTweaks.exe --restore [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --unload | --reload [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --status | --reset-settings [--pid NUMBER]\n"
+               << L"  DiaTweaks.exe --inspect-layout [--pid NUMBER]\n"
                << L"With no arguments, open the Windows control panel.\n"
                << L"--reset-settings is an alias of --restore: turn all tweaks off and save defaults.\n"
                << L"Hide commands replace the selection. --unload detaches; --reload reapplies saved settings.\n";
@@ -193,7 +195,7 @@ int wmain(int argc, wchar_t** argv) {
         unsigned flags = 0;
         DWORD pid = 0;
         bool restore = false, unload = false, reload = false;
-        bool settingsUi = false, gui = argc == 1, statusOnly = false;
+        bool settingsUi = false, gui = argc == 1, statusOnly = false, inspectLayout = false;
         for (int i = 1; i < argc; ++i) {
             std::wstring arg(argv[i]);
             if (arg == L"--help" || arg == L"-h") { Help(); return 0; }
@@ -203,6 +205,7 @@ int wmain(int argc, wchar_t** argv) {
             else if (arg == L"--restore" || arg == L"--reset-settings") restore = true;
             else if (arg == L"--gui") gui = true;
             else if (arg == L"--status") statusOnly = true;
+            else if (arg == L"--inspect-layout") { statusOnly = true; inspectLayout = true; }
             else if (arg == L"--settings") settingsUi = true;
             else if (arg == L"--unload" || arg == L"--detach") unload = true;
             else if (arg == L"--reload") { reload = true; settingsUi = true; }
@@ -247,6 +250,7 @@ int wmain(int argc, wchar_t** argv) {
                 unsigned active = static_cast<unsigned>(Send(window, dt::Flags));
                 for (auto const& tweak : dt::Tweaks) std::wcout << tweak.option << L"=" << ((active & tweak.mask) != 0) << L'\n';
                 Diagnostics(window);
+                if (inspectLayout) { Progress(L"Reading the live page and toolbar layout..."); std::wcout << dt::layout::Capture(window) << std::flush; }
             } else std::wcout << L"Full diagnostics require a ready session with the current protocol. Status did not modify it.\n";
             return 0;
         }

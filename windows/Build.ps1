@@ -25,6 +25,10 @@ try {
     if ($LASTEXITCODE) { throw 'Persistence test compilation failed.' }
     & .\persistence-tests.exe
     if ($LASTEXITCODE) { throw 'Persistence tests failed.' }
+    & cl.exe @common (Join-Path $PSScriptRoot 'tests/layout.cpp') /Fe:layout-tests.exe /link ole32.lib oleaut32.lib user32.lib advapi32.lib
+    if ($LASTEXITCODE) { throw 'Layout report test compilation failed.' }
+    & .\layout-tests.exe
+    if ($LASTEXITCODE) { throw 'Layout report tests failed.' }
     $headers = & (Join-Path $PSScriptRoot 'Prepare-WinUI.ps1') -OutputDirectory $output
     # The preparation script writes tool output too; its last output is the path.
     $headers = @($headers)[-1]
@@ -34,7 +38,7 @@ try {
       ('#define DT_TAP_CLSID ' + $buildId.ToString('X'))) | Set-Content -Encoding ASCII (Join-Path $output 'DiaTweaksBuild.h')
     $production = @('/DDT_PRODUCTION_BUILD', "/I$output")
     $exports = '/DEF:' + (Join-Path $PSScriptRoot 'native/Tap.def')
-    & cl.exe @common @production /D DT_SETTINGS_UI "/I$headers" /LD (Join-Path $PSScriptRoot 'native/Tap.cpp') (Join-Path $PSScriptRoot 'native/Settings.cpp') (Join-Path $PSScriptRoot 'native/Hover.cpp') (Join-Path $PSScriptRoot 'native/Pages.cpp') /Fe:DiaTweaks.Tap.dll /link $exports ole32.lib oleaut32.lib user32.lib advapi32.lib windowsapp.lib
+    & cl.exe @common @production /D DT_SETTINGS_UI "/I$headers" /LD (Join-Path $PSScriptRoot 'native/Tap.cpp') (Join-Path $PSScriptRoot 'native/Settings.cpp') (Join-Path $PSScriptRoot 'native/Hover.cpp') (Join-Path $PSScriptRoot 'native/Pages.cpp') (Join-Path $PSScriptRoot 'native/Layout.cpp') /Fe:DiaTweaks.Tap.dll /link $exports ole32.lib oleaut32.lib user32.lib advapi32.lib windowsapp.lib
     if ($LASTEXITCODE) { throw 'TAP DLL compilation failed.' }
     & cl.exe @common @production (Join-Path $PSScriptRoot 'native/Attach.cpp') /Fe:DiaTweaks.exe /link ole32.lib oleaut32.lib user32.lib psapi.lib advapi32.lib
     if ($LASTEXITCODE) { throw 'Controller compilation failed.' }

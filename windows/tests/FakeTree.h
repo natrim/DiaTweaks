@@ -314,3 +314,6 @@ inline unsigned dt::OwnedPages(std::shared_ptr<void> const& value, unsigned mask
 }
 inline HRESULT dt::PagesError(std::shared_ptr<void> const& value) noexcept { return static_cast<FakePages*>(value.get())->error; }
 inline std::wstring dt::PagesErrorText(std::shared_ptr<void> const& value) { return FAILED(PagesError(value)) ? L"Fake unsupported page binding." : L""; }
+
+inline std::wstring dt::LayoutSnapshot(IInspectable*) { return L"fake geometry without page content\n"; }
+inline std::wstring dt::PagesLayoutReport(std::shared_ptr<void> const&) { return L"fake page frame report\n"; }

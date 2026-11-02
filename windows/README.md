@@ -15,6 +15,7 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--edge-to-edge --square-sidebar-corners` | `squareSidebarCorners` (experimental) | Sidebar-facing CornerRadius values on page chrome |
 | `--gui` (or no arguments) | Windows control panel | `DiaTweaks.Gui.exe` |
 | `--status` | Read-only session state and diagnostics | Existing session only |
+| `--inspect-layout` | Live XAML/composition/child-window geometry | Existing session only |
 | `--settings` | Settings UI and saved selection | Dia Settings → Patches |
 | `--hide-toolbar --reveal-toolbar` | `revealToolbarOnHover` (experimental) | Pointer/focus policy on the hidden toolbar's own window and pane |
 | `--hide-chat` | `hideChatButton` | `ChatButton` |
@@ -323,3 +324,26 @@ page-layout HRESULT. Actual results in Dia need on-device verification.
 The hidden-toolbar watcher also reapplies compaction while the pointer is away,
 so a native tab switch resetting/replacing the row does not require hover to
 remove its gap again. A newly bound row is left to Dia instead of overwriting it.
+
+### Live layout report
+
+The control panel's **Status / diagnostics** action now includes --inspect-layout.
+It records bounded page/toolbar ancestor and descendant geometry, fixed/auto grid
+rows, explicit heights/minimum heights, XAML corner radii, composition clip types
+and radii, and child-window class/rectangles. It does not read page text, URLs,
+window titles, address values or arbitrary AutomationIds. Unknown XAML names are
+redacted. Copy the log to diagnose layouts that do not match the supported frame
+model. Inspection does not attach or modify a session.
+
+Guessed negative margins on VariantHost have been removed: an independently
+sized native web surface can be shifted instead of expanded by those margins.
+Edge-to-edge currently changes only supported small XAML padding; full coverage
+of native/compositor-only page frames needs a live layout report. A disabled
+Square corners switch still means no supported rounded XAML frame was found;
+it is not forced on without identifying the actual clip.
+
+Toolbar compaction now walks through implicit grid rows, supports nested
+explicit fixed rows and plain fixed-height/min-height wrapper containers, and
+retains each original value for restoration. Shared page rows and bindings are
+preserved. Empty info-bar slots do not block compaction. The detach compatibility
+floor is fixed at protocol 10 independently of the current report protocol.

@@ -18,11 +18,13 @@ inline constexpr UINT OwnedMask = WM_APP + 10, QueryVisible = WM_APP + 11;
 inline constexpr UINT Failure = WM_APP + 12;
 inline constexpr UINT SettingsNode = WM_APP + 13, SettingsState = WM_APP + 14, SaveSelection = WM_APP + 15;
 inline constexpr UINT LoadSelection = WM_APP + 16, ChangeAndSave = WM_APP + 17;
-inline constexpr LRESULT ProtocolVersion = 12;
+inline constexpr LRESULT ProtocolVersion = 13;
 // Keep detach messages and state values compatible across future protocol versions.
-inline constexpr LRESULT DetachProtocolVersion = 12;
+inline constexpr LRESULT DetachProtocolVersion = 10;
 inline constexpr UINT Detach = WM_APP + 18, DetachComplete = WM_APP + 19;
 inline constexpr UINT PageNode = WM_APP + 20, PageQuery = WM_APP + 21, PageOwned = WM_APP + 22, PageError = WM_APP + 23;
+inline constexpr UINT LayoutReport = WM_APP + 24;
+inline constexpr ULONG_PTR LayoutMagic = 0x44544c31;
 enum FailureField : unsigned { FailureStage, FailureError, FailureMetadata, FailureSource };
 enum Stage : unsigned {
     NoFailure, RegisterTarget, ReadVisibility, VisibilityType, VisibilityPolicy,

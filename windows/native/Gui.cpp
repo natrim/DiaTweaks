@@ -19,7 +19,7 @@ struct Action { int id; const wchar_t* title; const wchar_t* option; };
 constexpr Action Actions[] = {
     {Load, L"Load", L"--settings"}, {Unload, L"Unload", L"--unload"},
     {Reload, L"Reload", L"--reload"}, {Reset, L"Reset settings", L"--reset-settings"},
-    {Status, L"Status / diagnostics", L"--status"}, {Help, L"CLI help", L"--help"}
+    {Status, L"Status / diagnostics", L"--inspect-layout"}, {Help, L"CLI help", L"--help"}
 };
 struct Handle {
     HANDLE value = nullptr;

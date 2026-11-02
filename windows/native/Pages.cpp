@@ -7,6 +7,8 @@
 #include "PageHost.h"
 #include "PagePolicy.h"
 #include "Rules.h"
+#include "Layout.h"
+#include <sstream>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
@@ -211,7 +213,6 @@ HRESULT Apply(State& state, PageFrame& page) {
     }
     if (state.writes != before) pane.UpdateLayout();
     frame = Bounds(host, root);
-    auto paneFrame = Bounds(pane, root);
     auto base = Baseline<Thickness>(page, host, FrameworkElement::MarginProperty());
     auto current = host.Margin();
     Rect original = frame;
@@ -229,22 +230,17 @@ HRESULT Apply(State& state, PageFrame& page) {
         }
     }
     bool left = false, right = false;
-    double leftBoundary = 0, rightBoundary = rootElement.ActualWidth();
     for (auto const& weak : page.sidebars) if (auto sidebar = weak.get(); sidebar && Visible(sidebar)) {
         auto rect = Bounds(sidebar, root);
         double gapLeft = original.X - (rect.X + rect.Width), gapRight = rect.X - (original.X + original.Width);
-        if (gapLeft >= -1 && gapLeft <= 24) { left = true; leftBoundary = rect.X + rect.Width; }
-        if (gapRight >= -1 && gapRight <= 24) { right = true; rightBoundary = rect.X; }
+        if (gapLeft >= -1 && gapLeft <= 24) { left = true; }
+        if (gapRight >= -1 && gapRight <= 24) { right = true; }
     }
-    auto desired = Native(dt::page::Strip(Plain(base)));
-    desired.Left = (std::min)(desired.Left, base.Left - dt::page::Gap(original.X - leftBoundary));
-    desired.Right = (std::min)(desired.Right, base.Right - dt::page::Gap(rightBoundary - original.X - original.Width));
-    desired.Bottom = (std::min)(desired.Bottom, base.Bottom - dt::page::Gap(rootElement.ActualHeight() - original.Y - original.Height));
-    desired.Top = (std::min)(desired.Top, base.Top - dt::page::Gap(original.Y - paneFrame.Y));
-    before = state.writes;
-    auto marginResult = Set(state, page, host, FrameworkElement::MarginProperty(), L"Margin", desired, dt::EdgeToEdge);
+    // VariantHost can contain a separately sized native web surface. Expanding
+    // its layout slot with guessed negative margins can only recenter that
+    // surface instead of resizing it. Leave the host's native margin intact.
+    auto marginResult = Set(state, page, host, FrameworkElement::MarginProperty(), L"Margin", base, dt::EdgeToEdge);
     if (FAILED(marginResult)) result = marginResult;
-    if (state.writes != before) pane.UpdateLayout();
     frame = Bounds(host, root);
     page.corners = false;
     for (auto const& element : frames) {
@@ -345,4 +341,18 @@ std::wstring dt::PagesErrorText(std::shared_ptr<void> const& value) {
     auto& state = *static_cast<State*>(value.get());
     if (!state.detail.empty()) return state.detail;
     return FAILED(state.error) ? L"Could not apply or restore the page frame properties." : L"";
+}
+
+std::wstring dt::PagesLayoutReport(std::shared_ptr<void> const& value) {
+    if (!value) return L"No page style state.\n";
+    auto& state = *static_cast<State*>(value.get());
+    std::wostringstream out;
+    out << L"PAGE LAYOUT (read-only)\n";
+    for (auto const& page : state.pages) {
+        out << L"Page frame: ready=" << page.ready << L" rounded=" << page.corners << L" detached=" << page.detached
+            << L" ownedProperties=" << page.leases.size() << L" hr=0x" << std::hex << static_cast<unsigned long>(page.error) << std::dec << L'\n';
+        if (auto host = page.host.get()) out << LayoutSnapshot(reinterpret_cast<IInspectable*>(get_abi(host)));
+        if (out.tellp() > 140000) { out << L"[page report limit]\n"; break; }
+    }
+    return out.str();
 }

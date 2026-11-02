@@ -13,6 +13,7 @@
 #include "Preferences.h"
 #include "HoverHost.h"
 #include "PageHost.h"
+#include "Layout.h"
 
 namespace {
 HINSTANCE module;
@@ -194,6 +195,19 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return 0;
         }
         if (stopping && msg >= WM_APP) return E_ABORT;
+        if (msg == dt::LayoutReport) {
+            std::wstring report = dt::PagesLayoutReport(pages);
+            report += L"\nTOOLBAR LAYOUT (read-only)\n";
+            for (auto const& [node, button] : buttons) if (button.target == dt::Toolbar) {
+                auto object = button.instance ? button.instance : Instance(node);
+                if (object) report += dt::LayoutSnapshot(object.get());
+                if (report.size() > 220000) break;
+            }
+            if (report.size() > 240000) { report.resize(240000); report += L"\n[report truncated]\n"; }
+            COPYDATASTRUCT copy{dt::LayoutMagic, static_cast<DWORD>((report.size()+1)*sizeof(wchar_t)), report.data()};
+            DWORD_PTR result = 0;
+            return SendMessageTimeoutW(reinterpret_cast<HWND>(wp), WM_COPYDATA, reinterpret_cast<WPARAM>(hwnd), reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG, 2000, &result) ? static_cast<LRESULT>(result) : 0;
+        }
         if (msg == dt::PageQuery) return dt::QueryPages(pages, static_cast<unsigned>(wp));
         if (msg == dt::PageOwned) return dt::OwnedPages(pages, static_cast<unsigned>(wp));
         if (msg == dt::PageError) return dt::PagesError(pages);

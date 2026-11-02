@@ -13,5 +13,6 @@ void TickPages(std::shared_ptr<void> const&) noexcept;
 unsigned QueryPages(std::shared_ptr<void> const&, unsigned feature) noexcept;
 unsigned OwnedPages(std::shared_ptr<void> const&, unsigned feature = 0) noexcept;
 HRESULT PagesError(std::shared_ptr<void> const&) noexcept;
+std::wstring PagesLayoutReport(std::shared_ptr<void> const&);
 std::wstring PagesErrorText(std::shared_ptr<void> const&);
 }
