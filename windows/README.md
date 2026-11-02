@@ -393,8 +393,10 @@ to distinguish a delayed native resize from repainting inside an already full-si
 The timing log showed a full-height XAML page while the existing Chromium host
 was reset to the toolbar-visible rectangle on tab switches. While the toolbar
 is hidden, the viewport guard corrects `WM_WINDOWPOSCHANGING` on matching
-same-process `Chrome_WidgetWin_1` child windows before that stale move/resize
-is applied. It publishes current XAML bounds to the native window procedure;
+same-process `Chrome_WidgetWin_1` hosts and their `Chrome_RenderWidgetHostHWND`
+children before that stale move/resize is applied. Replacement renderer children
+are enrolled through the host's native creation notification, with tree discovery
+as a fallback. It publishes current XAML bounds to the native window procedure;
 that callback does not access WinUI or wait on the XAML thread. Layout changes
 refresh the target, including window resize and DPI changes. A temporary old
 toolbar offset is excluded while real info/bookmark bars retain their space.

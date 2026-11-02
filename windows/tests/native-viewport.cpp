@@ -44,6 +44,7 @@ int main() {
         WNDCLASSW c{}; c.hInstance=GetModuleHandleW(nullptr); c.lpfnWndProc=Proc; c.lpszClassName=L"ViewportTestOwner";
         Check(RegisterClassW(&c)!=0,"register owner");
         c.lpszClassName=L"Chrome_WidgetWin_1"; Check(RegisterClassW(&c)!=0,"register native host");
+        c.lpszClassName=L"Chrome_RenderWidgetHostHWND"; Check(RegisterClassW(&c)!=0,"register renderer");
         c.lpszClassName=L"UnrelatedViewport"; Check(RegisterClassW(&c)!=0,"register unrelated class");
         HWND owner=Owner();
         HWND view=Child(owner,L"Chrome_WidgetWin_1",200,44,796,752);
@@ -60,6 +61,8 @@ int main() {
             AttemptSize(view,bad);
             Check(Same(Rect(view,owner),full),"native tab resize cannot shrink or move viewport");
         }
+        SetWindowPos(view,nullptr,200,44,796,752,SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOSENDCHANGING);
+        Check(Same(Rect(view,owner),full),"resize that bypasses changing notification is repaired on the native thread");
         Check(GetWindowLongPtrW(other,GWLP_WNDPROC)==otherProc && GetWindowLongPtrW(unrelated,GWLP_WNDPROC)==unrelatedProc,
               "other pane and unrelated class are not subclassed");
         RECT larger{200,4,1050,820};
@@ -68,8 +71,10 @@ int main() {
         Check(Same(Rect(view,owner),larger),"new target follows real window resize");
         // A newly created renderer uses the guarded native parent's full client.
         RECT client{}; GetClientRect(view,&client);
-        auto renderer=Child(view,L"STATIC",0,0,client.right,client.bottom);
+        auto renderer=Child(view,L"Chrome_RenderWidgetHostHWND",0,0,client.right-4,client.bottom-40);
         Check(Rect(renderer,view).bottom==816,"new renderer starts at full native client height");
+        AttemptSize(renderer,{0,0,client.right-4,client.bottom-40});
+        Check(Rect(renderer,view).bottom==816,"replacement renderer cannot independently shrink inside its full-size host");
         Check(dt::NativeViewportGuardReport(guard).find(L"preventedResizes=0")==std::wstring::npos,"intercepted resize attempts are reported");
         dt::SuspendNativeViewportGuard(guard);
         Check(GetWindowLongPtrW(view,GWLP_WNDPROC)==original,"original window procedure restored");

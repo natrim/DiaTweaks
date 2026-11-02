@@ -16,6 +16,7 @@ std::recursive_mutex gate;
 std::map<HWND, Hook> hooks;
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 void Position(HWND, HWND, RECT);
+HRESULT Attach(HWND, std::shared_ptr<Target> const&);
 UINT SyncMessage() { static UINT message=RegisterWindowMessageW(L"DiaTweaks.NativeViewport.SyncBounds.v1"); return message; }
 struct Target {
     HWND owner = nullptr;
@@ -48,6 +49,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto it = hooks.find(hwnd);
         if (it != hooks.end()) { original = it->second.original; target = it->second.target.lock(); }
     }
+    if (msg==WM_PARENTNOTIFY && LOWORD(wp)==WM_CREATE && target) {
+        auto child=reinterpret_cast<HWND>(lp);
+        wchar_t type[64]{}; GetClassNameW(child,type,64);
+        DWORD process=0; GetWindowThreadProcessId(child,&process);
+        HWND owner=nullptr; RECT rect{};
+        { std::lock_guard lock(gate); if (target->enabled) { owner=target->owner; rect=target->client; } }
+        // Enrol a replacement renderer before CreateWindow returns to Chromium.
+        // Its first native resize must use the already full-size host client.
+        RECT childRect{}; GetWindowRect(child,&childRect);
+        LONG width=childRect.right-childRect.left, height=childRect.bottom-childRect.top;
+        bool fullWidth=width==0 || std::abs(width-(rect.right-rect.left))<=16;
+        bool fullHeight=height==0 || std::abs(height-(rect.bottom-rect.top))<=256;
+        if (owner && process==GetCurrentProcessId() && std::wstring_view(type)==L"Chrome_RenderWidgetHostHWND" &&
+            (GetWindowLongPtrW(child,GWL_STYLE)&WS_CHILD) && fullWidth && fullHeight &&
+            GetParent(child)==hwnd && SUCCEEDED(Attach(child,target))) Position(child,owner,rect);
+    }
     if (msg==SyncMessage()) {
         HWND owner=nullptr; RECT rect{};
         if (target) {
@@ -58,6 +75,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     LRESULT result = original ? CallWindowProcW(original, hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+    if (msg==WM_WINDOWPOSCHANGED && target && IsWindowVisible(hwnd)) {
+        HWND owner=nullptr; RECT rect{};
+        { std::lock_guard lock(gate); if (target->enabled) { owner=target->owner; rect=target->client; } }
+        // SWP_NOSENDCHANGING bypasses the pre-change notification. Repair
+        // that path before the owner thread returns to processing paints.
+        if (owner && !IsIconic(owner) && IsChild(owner,hwnd)) Position(hwnd,owner,rect);
+    }
     if (msg == WM_NCDESTROY) {
         std::lock_guard lock(gate);
         if (auto it = hooks.find(hwnd); it != hooks.end()) { it->second.target.reset(); it->second.identity=nullptr; it->second.installed=false; }
@@ -114,6 +138,7 @@ HRESULT Attach(HWND hwnd, std::shared_ptr<Target> const& target) {
     return S_OK;
 }
 void Position(HWND hwnd, HWND owner, RECT rect) {
+    if (!IsWindow(owner) || IsIconic(owner) || !IsChild(owner,hwnd)) return;
     POINT origin{rect.left,rect.top}; MapWindowPoints(owner,GetParent(hwnd),&origin,1);
     RECT actual{}; GetWindowRect(hwnd,&actual);
     POINT current{actual.left,actual.top}; ScreenToClient(GetParent(hwnd),&current);
@@ -153,7 +178,8 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
                 auto s=reinterpret_cast<Search*>(data);
                 if (++s->visited>128) return FALSE;
                 wchar_t type[64]{}; GetClassNameW(child,type,64);
-                if (std::wstring_view(type)!=L"Chrome_WidgetWin_1" || !(GetWindowLongPtrW(child,GWL_STYLE)&WS_CHILD) || !IsWindowVisible(child)) return TRUE;
+                if ((std::wstring_view(type)!=L"Chrome_WidgetWin_1" && std::wstring_view(type)!=L"Chrome_RenderWidgetHostHWND") ||
+                    !(GetWindowLongPtrW(child,GWL_STYLE)&WS_CHILD) || !IsWindowVisible(child)) return TRUE;
                 DWORD process=0; GetWindowThreadProcessId(child,&process);
                 if (process!=GetCurrentProcessId()) return TRUE;
                 RECT r{}; GetWindowRect(child,&r);
@@ -165,7 +191,21 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
             },reinterpret_cast<LPARAM>(&search));
         }
         HRESULT result=S_OK;
-        for (auto hwnd:windows) {
+        // Hosts precede renderer children even when an existing handle list
+        // happens to be sorted differently from EnumChildWindows traversal.
+        for (unsigned pass=0; pass<2; ++pass) for (auto hwnd:windows) {
+            wchar_t type[64]{}; GetClassNameW(hwnd,type,64);
+            bool host=std::wstring_view(type)==L"Chrome_WidgetWin_1";
+            if ((pass==0)!=host) continue;
+            if (!host) {
+                bool enrolledParent=false;
+                std::lock_guard lock(gate);
+                for (HWND parent=GetParent(hwnd); parent && parent!=owner; parent=GetParent(parent)) {
+                    auto it=hooks.find(parent);
+                    if (it!=hooks.end() && it->second.identity==target.get()) { enrolledParent=true; break; }
+                }
+                if (!enrolledParent) continue;
+            }
             auto hr=Attach(hwnd,target);
             if (FAILED(hr)) { result=hr; continue; }
             Position(hwnd,owner,client);
