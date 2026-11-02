@@ -19,6 +19,7 @@ int main() {
         unsigned writes=fake->writes;
         auto report=dt::layout::Capture(window);
         Check(report.find(L"fake page frame report")!=std::wstring::npos && report.find(L"fake geometry")!=std::wstring::npos,"page and toolbar geometry transported across reply window");
+        Check(report.find(L"fake viewport timing trace")!=std::wstring::npos, "transient viewport trace transported with diagnostics");
         Check(fake->writes==writes && SendMessageW(window,dt::Flags,0,0)==dt::Chat,"inspection is read-only");
         bool failed=false;
         try { dt::layout::Capture(nullptr,20); } catch(std::exception const&) { failed=true; }

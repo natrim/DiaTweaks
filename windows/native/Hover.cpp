@@ -5,6 +5,8 @@
 #undef GetCurrentTime
 #endif
 #include "HoverHost.h"
+#include "Layout.h"
+#include "ViewportTrace.h"
 #include <winrt/Microsoft.UI.Content.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
@@ -79,7 +81,43 @@ struct Region {
     std::vector<std::unique_ptr<RowLease>> rows;
     std::vector<std::unique_ptr<ElementLease>> containers;
     double height = 56;
+    dt::ViewportTrace trace;
+    Microsoft::UI::Xaml::Media::CompositionTarget::Rendering_revoker rendering;
+    bool tracing = false;
+    ULONGLONG traceUntil = 0;
+    HRESULT traceError = S_OK;
 };
+void CaptureViewport(Region& region, wchar_t const* source, bool force = false) noexcept {
+    try {
+        auto page = region.page.get();
+        auto geometry = page ? dt::ViewportSnapshot(reinterpret_cast<IInspectable*>(get_abi(page))) : L"  page unavailable\n";
+        region.trace.Add(GetTickCount64(), source, std::move(geometry), force);
+    } catch (...) { region.traceError = to_hresult(); }
+}
+void TraceViewportFrames(std::shared_ptr<Region> const& region) noexcept {
+    try {
+        auto toolbar = region->toolbar.get();
+        if (!toolbar || toolbar.Visibility() != Visibility::Collapsed) {
+            region->rendering.revoke(); region->tracing = false; return;
+        }
+        region->traceUntil = GetTickCount64() + 2000;
+        if (region->tracing) return;
+        std::weak_ptr<Region> weak = region;
+        region->rendering = Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(auto_revoke,
+            [weak](Object const&, Object const&) noexcept {
+                auto current = weak.lock();
+                if (!current) return;
+                try {
+                    auto bar = current->toolbar.get();
+                    if (GetTickCount64() >= current->traceUntil || !bar || bar.Visibility() != Visibility::Collapsed) {
+                        current->rendering.revoke(); current->tracing = false; return;
+                    }
+                    CaptureViewport(*current, L"render");
+                } catch (...) { current->traceError = to_hresult(); current->rendering.revoke(); current->tracing = false; }
+            });
+        region->tracing = true;
+    } catch (...) { region->traceError = to_hresult(); }
+}
 FrameworkElement Named(DependencyObject root, wchar_t const* name) {
     struct Visit { DependencyObject node; unsigned depth; };
     std::vector<Visit> queue{{root, 0}};
@@ -287,25 +325,25 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
         // keeping the toolbar alive. Never flush the previous tab's page.
         auto page = Named(pane, L"VariantHost");
         region->page = page;
-        if (page) {
-            struct Item { DependencyObject node; unsigned depth; };
-            std::vector<Item> queue{{page, 0}};
-            for (size_t i = 0; i < queue.size() && i < 96; ++i) {
-                auto item = queue[i];
-                if (auto element = item.node.try_as<FrameworkElement>()) {
-                    element.InvalidateMeasure();
-                    element.InvalidateArrange();
-                }
-                if (item.depth >= 5) continue;
-                int count = VisualTreeHelper::GetChildrenCount(item.node);
-                for (int j = 0; j < count && queue.size() < 96; ++j)
-                    queue.push_back({VisualTreeHelper::GetChild(item.node, j), item.depth + 1});
-            }
-        }
-        // Visibility and row policies have already been applied as a batch.
-        // Arrange the current page now instead of waiting for the polling tick
-        // to catch up with the newly inserted native viewport.
+        CaptureViewport(*region, L"before-layout", true);
+        // Visibility/row changes already invalidate layout. Invalidating every
+        // page presenter again can cause another native viewport size cycle.
+        // Complete only the layout already requested by Dia and our policies.
         pane.UpdateLayout();
+        CaptureViewport(*region, L"after-layout", true);
+        TraceViewportFrames(std::static_pointer_cast<Region>(value));
         return S_OK;
     } catch (...) { return to_hresult(); }
+}
+
+std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const& value) {
+    if (!value) return L"VIEWPORT TIMING unavailable\n";
+    auto region = static_cast<Region*>(value.get());
+    auto report = region->trace.Report();
+    if (FAILED(region->traceError)) {
+        wchar_t error[80]{};
+        swprintf_s(error, L"  traceError=0x%08lX\n", static_cast<unsigned long>(region->traceError));
+        report += error;
+    }
+    return report;
 }

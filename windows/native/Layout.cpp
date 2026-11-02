@@ -17,6 +17,7 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <cmath>
 namespace {
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -123,5 +124,50 @@ std::wstring dt::LayoutSnapshot(IInspectable* object) {
                     << L" visible=" << IsWindowVisible(child) << L'\n';
         return TRUE;
     },reinterpret_cast<LPARAM>(&report));
+    return out.str();
+}
+
+std::wstring dt::ViewportSnapshot(IInspectable* object) {
+    Windows::Foundation::IInspectable instance{nullptr}; copy_from_abi(instance, object);
+    auto page = instance.try_as<FrameworkElement>();
+    if (!page || !page.XamlRoot()) return L"  page unavailable\n";
+    auto root = page.XamlRoot();
+    auto rect = page.TransformToVisual(root.Content()).TransformBounds({0, 0,
+        static_cast<float>(page.ActualWidth()), static_cast<float>(page.ActualHeight())});
+    auto scale = root.RasterizationScale();
+    auto hwnd = Microsoft::UI::GetWindowFromWindowId(root.ContentIslandEnvironment().AppWindowId());
+    double left = rect.X * scale, top = rect.Y * scale;
+    double right = (rect.X + rect.Width) * scale, bottom = (rect.Y + rect.Height) * scale;
+    std::wostringstream out; out << std::fixed << std::setprecision(1);
+    out << L"  XAML physical=" << left << L',' << top << L',' << right-left << L',' << bottom-top << L" scale=" << scale << L'\n';
+    if (auto parent = VisualTreeHelper::GetParent(page).try_as<FrameworkElement>()) {
+        auto bounds = parent.TransformToVisual(root.Content()).TransformBounds({0, 0,
+            static_cast<float>(parent.ActualWidth()), static_cast<float>(parent.ActualHeight())});
+        out << L"  parent physical=" << bounds.X * scale << L',' << bounds.Y * scale << L','
+            << bounds.Width * scale << L',' << bounds.Height * scale << L'\n';
+    }
+    struct Sample { std::wostream* out; HWND parent; double left, top, right, bottom; unsigned visited=0, found=0; } sample{&out, hwnd, left, top, right, bottom};
+    if (hwnd) EnumChildWindows(hwnd, [](HWND child, LPARAM data)->BOOL {
+        auto state = reinterpret_cast<Sample*>(data);
+        if (++state->visited > 128 || state->found >= 8) return FALSE;
+        if (!IsWindowVisible(child)) return TRUE;
+        wchar_t name[96]{}; GetClassNameW(child, name, static_cast<int>(std::size(name)));
+        std::wstring_view type{name};
+        if (type != L"Chrome_WidgetWin_1" && type != L"Chrome_RenderWidgetHostHWND" && type != L"Intermediate D3D Window") return TRUE;
+        RECT rect{};
+        if (!GetWindowRect(child, &rect)) return TRUE;
+        POINT origin{rect.left, rect.top};
+        if (!ScreenToClient(state->parent, &origin)) return TRUE;
+        LONG width = rect.right - rect.left, height = rect.bottom - rect.top;
+        // Match this pane, excluding another split view or sidebar surface.
+        if (std::abs(origin.x - state->left) > 16 || std::abs(origin.x + width - state->right) > 16 ||
+            std::abs(origin.y - state->top) > 256 || origin.y + height <= state->top) return TRUE;
+        ++state->found;
+        *state->out << L"  " << name << L" id=" << reinterpret_cast<ULONG_PTR>(child)
+            << L" physical=" << origin.x << L',' << origin.y << L',' << width << L',' << height
+            << L" bottomShortBy=" << state->bottom - origin.y - height << L'\n';
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&sample));
+    if (!sample.found) out << L"  no matching visible native surface\n";
     return out.str();
 }

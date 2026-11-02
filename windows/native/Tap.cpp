@@ -232,6 +232,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             for (auto const& [node, button] : buttons) if (button.target == dt::Toolbar) {
                 auto object = button.instance ? button.instance : Instance(node);
                 if (object) report += dt::LayoutSnapshot(object.get());
+                report += dt::ToolbarLayoutTrace(button.hoverRegion);
                 if (report.size() > 220000) break;
             }
             if (report.size() > 240000) { report.resize(240000); report += L"\n[report truncated]\n"; }

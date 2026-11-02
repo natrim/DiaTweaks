@@ -5,6 +5,7 @@
 #include "../native/Hover.h"
 #include "../native/PagePolicy.h"
 #include "../native/PageClipPolicy.h"
+#include "../native/ViewportTrace.h"
 #include <array>
 
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -142,6 +143,18 @@ int main() {
     Check(dt::MissingDependency(dt::SquareSidebar, 0) == dt::EdgeToEdge && dt::MissingDependency(dt::SquareSidebar, dt::EdgeToEdge) == 0,
           "square sidebar corners depend on edge-to-edge");
     Check(!dt::HiddenWithToolbar(dt::EdgeToEdge, dt::Toolbar) && !dt::HiddenWithToolbar(dt::SquareSidebar, dt::Toolbar), "page options are independent of toolbar hiding");
+    dt::ViewportTrace trace;
+    trace.Add(100, L"before-layout", L"height=740\n");
+    trace.Add(110, L"render", L"height=740\n");
+    Check(trace.entries.size() == 1, "unchanged render frames do not fill timing buffer");
+    trace.Add(120, L"after-layout", L"height=740\n", true);
+    trace.Add(140, L"render", L"height=796\n");
+    auto timing = trace.Report();
+    Check(timing.find(L"+40ms render") != std::wstring::npos && timing.find(L"height=796") != std::wstring::npos,
+          "trace keeps transient short viewport and time to full height");
+    for (unsigned i = 0; i < 150; ++i) trace.Add(200 + i, L"render", std::to_wstring(i));
+    Check(trace.entries.size() == dt::ViewportTrace::Capacity && trace.entries.back().time == 349,
+          "timing trace retains a bounded recent history");
     unsigned covered = 0;
     for (auto const& tweak : dt::Tweaks) {
         Check((covered & tweak.mask) == 0 && (tweak.required & tweak.mask) == tweak.required, "disjoint catalog");

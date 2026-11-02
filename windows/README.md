@@ -372,8 +372,18 @@ remain in place, and replaced tab clips are restored before being released.
 Hidden-toolbar viewport updates are triggered by coalesced XAML visual-tree
 changes, including unnamed presenter replacements during tab switches. The UI
 pass reapplies toolbar compaction before page styling, refreshes the current
-VariantHost, invalidates its bounded presenter subtree and completes layout
-once for the batch. Hover reveal/hide transitions also flush layout. The
+VariantHost and completes pending layout once for the batch. It does not
+invalidate the entire page subtree again, avoiding an extra native resize cycle. Hover reveal/hide transitions also flush layout. The
 80/200ms watcher remains a fallback; outer margins still belong only to
 Edge-to-edge. Native Chromium page painting is outside these XAML layout tests
 and needs verification in Dia.
+
+For a brief bottom flash, Status / diagnostics includes **VIEWPORT TIMING**.
+After hidden-toolbar layout events it samples XAML page bounds and matching
+visible Chromium/D3D child-window rectangles for up to two seconds. Only changed
+geometry plus before/after layout samples is retained (96 entries maximum).
+`bottomShortBy` is the physical-pixel difference between the expected page bottom
+and native surface bottom. The render callback only observes geometry and is
+revoked on expiry, toolbar reveal or region destruction. It reads no page text,
+URLs or window titles. Switch a few tabs and copy Status / diagnostics afterwards
+to distinguish a delayed native resize from repainting inside an already full-size surface.
