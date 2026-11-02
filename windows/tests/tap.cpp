@@ -84,8 +84,13 @@ int main() {
         fake->nodes.at(18).binding = false;
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "clear failed selection");
         constexpr WPARAM HoverTimer = 0x4455;
+        Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->Compacted(11), "hide-only compacts without hover option");
+        fake->ResetToolbarRow(11);
+        SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
+        Check(fake->Compacted(11), "hide-only maintains compaction after tab reset");
+        Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && !fake->Compacted(11) && !fake->Compacted(12), "hide-only restores layout when disabled");
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts | dt::RevealToolbar | dt::Chat, 0) == 0, "enable hover with hidden toolbar and Chat preference");
-        Check(fake->Compacted(11) && !fake->Compacted(12), "compact only owned hidden toolbar, not app-hidden bookmarks");
+        Check(fake->Compacted(11) && fake->Compacted(12), "compact reserved rows for both hidden bar hosts without changing app-hidden bookmarks visibility");
         fake->FailLayoutRestore(11, true);
         fake->Hover(11, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
@@ -116,7 +121,7 @@ int main() {
         fake->Hover(11, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->nodes.at(11).value == L"Collapsed", "disabling hover while revealed rehides toolbar");
-        Check(!fake->Compacted(11), "disabling hover releases compact layout");
+        Check(fake->Compacted(11), "hide-only keeps the layout compact when hover is disabled");
         Check(SendMessageW(hwnd, dt::Configure, dt::RevealToolbar, 0) == 0 && fake->nodes.at(11).value == L"Visible", "hover choice can remain dormant when Hide toolbar is off");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && fake->nodes.at(1).value == L"Visible", "restore clears hover and child effects");
         fake->Hover(11, {true}); fake->Hover(12, {true});

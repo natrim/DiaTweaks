@@ -342,6 +342,7 @@ of native/compositor-only page frames needs a live layout report. A disabled
 Square corners switch still means no supported rounded XAML frame was found;
 it is not forced on without identifying the actual clip.
 
+Compaction follows Hide toolbar itself, including when Reveal toolbar on hover is off.
 Toolbar compaction now walks through implicit grid rows, supports nested
 explicit fixed rows and plain fixed-height/min-height wrapper containers, and
 retains each original value for restoration. Shared page rows and bindings are

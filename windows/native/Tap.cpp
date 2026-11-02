@@ -84,7 +84,9 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         bool ready = EnsureHoverRegions();
         if (hoverAttempts) --hoverAttempts;
         if (!HoverEnabled()) {
-            if (ready || !hoverAttempts) KillTimer(window, HoverTimer);
+            if (flags & dt::Toolbar) {
+                for (auto& [node, button] : buttons) if (button.target & dt::ToolbarParts) Apply(node, button, ShouldHide(button));
+            } else if (ready || !hoverAttempts) KillTimer(window, HoverTimer);
             if (ready) dt::RefreshSettings();
             return;
         }
@@ -310,15 +312,16 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             if (messageDepth > 1) return -1;
             if (wp & ~dt::All) return -1;
             flags = static_cast<unsigned>(wp);
-            if (HoverEnabled()) {
-                if (!EnsureHoverRegions() || !SetTimer(window, HoverTimer, 80, nullptr)) return -1;
-            } else {
-                KillTimer(window, HoverTimer);
+            if (!HoverEnabled()) {
                 for (auto& [node, button] : buttons) {
                     (void)node;
                     button.hover.Reset(); button.hoverRestored = false;
                 }
             }
+            if (flags & dt::Toolbar) {
+                bool ready = EnsureHoverRegions();
+                if ((HoverEnabled() && !ready) || !SetTimer(window, HoverTimer, HoverEnabled() ? 80 : 200, nullptr)) return -1;
+            } else KillTimer(window, HoverTimer);
             int failures = 0;
             // Reveal parent hosts before restoring children; hide hosts only
             // after child choices have been applied while their handles are live.
@@ -485,7 +488,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         auto fail = [&](dt::Stage stage, HRESULT error) {
             button.failure = stage; button.error = error; return false;
         };
-        if ((button.target & dt::ToolbarParts) && (!enable || !HoverEnabled())) {
+        if ((button.target & dt::ToolbarParts) && !enable) {
             HRESULT hr = dt::CompactToolbarRow(button.hoverRegion, false);
             if (FAILED(hr)) return fail(dt::AdjustLayout, hr);
         }
@@ -523,7 +526,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             return true;
         }
         if (!v->MetadataBits && dt::IsCollapsed(dt::Text(v->Value))) {
-            HRESULT hr = HoverEnabled() && button.active ? dt::CompactToolbarRow(button.hoverRegion, true) : S_OK;
+            HRESULT hr = (flags & dt::Toolbar) && (button.target & dt::ToolbarParts) ? dt::CompactToolbarRow(button.hoverRegion, true) : S_OK;
             return SUCCEEDED(hr) ? true : fail(dt::AdjustLayout, hr);
         }
         // An app-side visibility change ends our previous ownership of the value.
@@ -548,7 +551,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         dt::Properties after(service, node);
         auto changed = after.Find(L"Visibility");
         if (changed && !changed->MetadataBits && dt::IsCollapsed(dt::Text(changed->Value))) {
-            HRESULT layout = HoverEnabled() && (button.target & dt::ToolbarParts) ? dt::CompactToolbarRow(button.hoverRegion, true) : S_OK;
+            HRESULT layout = (flags & dt::Toolbar) && (button.target & dt::ToolbarParts) ? dt::CompactToolbarRow(button.hoverRegion, true) : S_OK;
             if (FAILED(layout)) return fail(dt::AdjustLayout, layout);
             button.failure = dt::NoFailure; button.error = S_OK; return true;
         }
