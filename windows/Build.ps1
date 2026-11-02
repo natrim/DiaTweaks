@@ -38,5 +38,12 @@ try {
     if ($LASTEXITCODE) { throw 'TAP DLL compilation failed.' }
     & cl.exe @common @production (Join-Path $PSScriptRoot 'native/Attach.cpp') /Fe:DiaTweaks.exe /link ole32.lib oleaut32.lib user32.lib psapi.lib advapi32.lib
     if ($LASTEXITCODE) { throw 'Controller compilation failed.' }
+    $manifest = '/MANIFESTINPUT:' + (Join-Path $PSScriptRoot 'native/Gui.manifest')
+    & cl.exe @common (Join-Path $PSScriptRoot 'native/Gui.cpp') /Fe:DiaTweaks.Gui.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED $manifest user32.lib gdi32.lib comctl32.lib shell32.lib
+    if ($LASTEXITCODE) { throw 'Control panel compilation failed.' }
+    & cl.exe @common (Join-Path $PSScriptRoot 'tests/gui.cpp') /Fe:gui-tests.exe /link user32.lib gdi32.lib comctl32.lib shell32.lib
+    if ($LASTEXITCODE) { throw 'Control panel test compilation failed.' }
+    & .\gui-tests.exe
+    if ($LASTEXITCODE) { throw 'Control panel tests failed.' }
 } finally { Pop-Location }
-Write-Host "Built DiaTweaks.exe and DiaTweaks.Tap.dll in $output"
+Write-Host "Built DiaTweaks.exe, DiaTweaks.Gui.exe and DiaTweaks.Tap.dll in $output"

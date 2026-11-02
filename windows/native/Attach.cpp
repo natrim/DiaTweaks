@@ -12,6 +12,7 @@
 #include "Protocol.h"
 #include "Rules.h"
 #include "SettingsHost.h"
+#include "Processes.h"
 
 namespace fs = std::filesystem;
 namespace {
@@ -23,24 +24,21 @@ struct Library {
     HMODULE value;
     ~Library() { if (value) FreeLibrary(value); }
 };
-bool IsDia(DWORD pid) {
-    Handle process{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)};
-    if (!process.value) return false;
-    wchar_t path[32768]; DWORD length = static_cast<DWORD>(std::size(path));
-    return QueryFullProcessImageNameW(process.value, 0, path, &length) &&
-           _wcsicmp(fs::path(std::wstring(path, length)).filename().c_str(), L"Dia.exe") == 0;
-}
-std::set<DWORD> FindDia() {
-    std::set<DWORD> result;
-    EnumWindows([](HWND hwnd, LPARAM data) -> BOOL {
-        wchar_t cls[128]{};
-        GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
-        if (wcscmp(cls, L"WinUIDesktopWin32WindowClass") != 0) return TRUE;
-        DWORD pid = 0; GetWindowThreadProcessId(hwnd, &pid);
-        if (IsDia(pid)) reinterpret_cast<std::set<DWORD>*>(data)->insert(pid);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&result));
-    return result;
+using dt::FindDia;
+void Progress(wchar_t const* text) { std::wcout << L"[progress] " << text << std::endl; }
+int ShowGui(DWORD pid) {
+    wchar_t executable[32768]{};
+    DWORD size = GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)));
+    if (!size || size >= std::size(executable)) throw std::runtime_error("Cannot locate this executable.");
+    auto path = fs::path(executable).parent_path() / L"DiaTweaks.Gui.exe";
+    std::wstring command = L"\"" + path.wstring() + L"\"";
+    if (pid) command += L" --pid " + std::to_wstring(pid);
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, path.parent_path().c_str(), &startup, &process))
+        throw std::runtime_error("Cannot open the control panel. Keep DiaTweaks.Gui.exe beside DiaTweaks.exe.");
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    return 0;
 }
 HWND FindTap(DWORD pid) {
     HWND hwnd = nullptr;
@@ -173,11 +171,14 @@ HRESULT Attach(DWORD pid, const fs::path& tap) {
 }
 void Help() {
     std::wcout << L"DiaTweaks for Windows (experimental, x64)\n"
+               << L"  DiaTweaks.exe --gui [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --settings [--pid NUMBER]\n"
                << L"  DiaTweaks.exe [hide options] [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --restore [--pid NUMBER]\n"
                << L"  DiaTweaks.exe --unload | --reload [--pid NUMBER]\n"
-               << L"With no arguments, attach the Settings UI and apply saved preferences.\n"
+               << L"  DiaTweaks.exe --status | --reset-settings [--pid NUMBER]\n"
+               << L"With no arguments, open the Windows control panel.\n"
+               << L"--reset-settings is an alias of --restore: turn all tweaks off and save defaults.\n"
                << L"Hide commands replace the selection. --unload detaches; --reload reapplies saved settings.\n";
     for (auto const& tweak : dt::Tweaks) std::wcout << L"  " << tweak.option << L"  " << tweak.title << L'\n';
 }
@@ -188,14 +189,16 @@ int wmain(int argc, wchar_t** argv) {
         unsigned flags = 0;
         DWORD pid = 0;
         bool restore = false, unload = false, reload = false;
-        bool settingsUi = argc == 1;
+        bool settingsUi = false, gui = argc == 1, statusOnly = false;
         for (int i = 1; i < argc; ++i) {
             std::wstring arg(argv[i]);
             if (arg == L"--help" || arg == L"-h") { Help(); return 0; }
             unsigned selectedMask = 0;
             for (auto const& tweak : dt::Tweaks) if (arg == tweak.option) selectedMask = tweak.mask;
             if (selectedMask) flags |= selectedMask;
-            else if (arg == L"--restore") restore = true;
+            else if (arg == L"--restore" || arg == L"--reset-settings") restore = true;
+            else if (arg == L"--gui") gui = true;
+            else if (arg == L"--status") statusOnly = true;
             else if (arg == L"--settings") settingsUi = true;
             else if (arg == L"--unload" || arg == L"--detach") unload = true;
             else if (arg == L"--reload") { reload = true; settingsUi = true; }
@@ -208,11 +211,17 @@ int wmain(int argc, wchar_t** argv) {
                 pid = static_cast<DWORD>(number);
             } else throw std::runtime_error("Unknown or incomplete argument. Run with --help.");
         }
-        if ((unload && (settingsUi || reload || flags || restore)) || (!unload && ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore)))))) { Help(); return 2; }
+        if (gui) {
+            if (flags || restore || settingsUi || unload || reload || statusOnly) { Help(); return 2; }
+            return ShowGui(pid);
+        }
+        if (statusOnly && (flags || restore || settingsUi || unload || reload)) { Help(); return 2; }
+        if (!statusOnly && ((unload && (settingsUi || reload || flags || restore)) || (!unload && ((settingsUi && (flags || restore)) || (!settingsUi && ((!flags && !restore) || (flags && restore))))))) { Help(); return 2; }
         if (!settingsUi && (flags & dt::RevealToolbar) && !(flags & dt::Toolbar)) {
             std::wcerr << L"--reveal-toolbar requires --hide-toolbar.\n";
             return 2;
         }
+        Progress(L"Finding the target Dia process...");
         auto processes = FindDia();
         if (pid && !processes.count(pid)) throw std::runtime_error("--pid must identify a Dia process with a WinUI browser window.");
         if (!pid) {
@@ -221,12 +230,25 @@ int wmain(int argc, wchar_t** argv) {
             pid = *processes.begin();
         }
         HWND window = FindTap(pid);
+        if (statusOnly) {
+            if (!window) { std::wcout << L"Dia is running (PID " << pid << L"). DiaTweaks is detached.\n"; return 0; }
+            auto version = Send(window, dt::Version), state = Send(window, dt::State);
+            std::wcout << L"Dia PID=" << pid << L", protocol=" << version << L", state=" << state
+                       << L", this build=" << ThisBuild(window) << L'\n';
+            if (version == dt::ProtocolVersion && state == 1) {
+                unsigned active = static_cast<unsigned>(Send(window, dt::Flags));
+                for (auto const& tweak : dt::Tweaks) std::wcout << tweak.option << L"=" << ((active & tweak.mask) != 0) << L'\n';
+                Diagnostics(window);
+            } else std::wcout << L"Full diagnostics require a ready session with the current protocol. Status did not modify it.\n";
+            return 0;
+        }
         if (window && Send(window, dt::Version) < dt::DetachProtocolVersion)
             throw std::runtime_error("This older session cannot detach. Restart Dia once to install the reload-capable build.");
         HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (FAILED(com)) throw std::runtime_error("Cannot initialize COM.");
         struct Com { ~Com() { CoUninitialize(); } } comScope;
         if (window && (unload || reload || !ThisBuild(window))) {
+            Progress(L"Restoring controls and disconnecting the current session...");
             DetachSession(window);
             window = nullptr;
         }
@@ -241,12 +263,14 @@ int wmain(int argc, wchar_t** argv) {
             if (!count || count >= std::size(executable)) throw std::runtime_error("Cannot locate this executable.");
             fs::path tap = fs::path(executable).parent_path() / L"DiaTweaks.Tap.dll";
             if (!fs::is_regular_file(tap)) throw std::runtime_error("Keep DiaTweaks.Tap.dll beside DiaTweaks.exe.");
+            Progress(L"Loading the XAML diagnostics add-on...");
             HRESULT hr = Attach(pid, ShadowCopy(tap));
             if (FAILED(hr)) {
                 std::wcerr << L"XAML diagnostics attach failed: 0x" << std::hex << static_cast<unsigned long>(hr)
                            << L". No button override was requested.\n";
                 return 1;
             }
+            Progress(L"Waiting for the XAML tree subscription...");
             ULONGLONG deadline = GetTickCount64() + 15000;
             do {
                 window = FindTap(pid);
@@ -261,6 +285,7 @@ int wmain(int argc, wchar_t** argv) {
         if (settingsUi) {
             // Read from the same process/package view that saves UI changes.
             // Never turn a failed read into defaults and overwrite the store.
+            Progress(L"Reading saved settings from Dia...");
             LRESULT saved = Send(window, dt::LoadSelection);
             if (saved < 0 || (static_cast<unsigned long long>(saved) & ~static_cast<unsigned long long>(dt::All)))
                 throw std::runtime_error("Could not read Dia's saved preferences. No selection was changed or saved.");
@@ -281,6 +306,7 @@ int wmain(int argc, wchar_t** argv) {
                 Sleep(50);
             } while (GetTickCount64() < deadline);
         }
+        Progress(restore ? L"Restoring controls and resetting saved choices..." : L"Applying and verifying tweaks...");
         unsigned previous = static_cast<unsigned>(Send(window, dt::Flags));
         unsigned restoring = restore ? static_cast<unsigned>(Send(window, dt::OwnedMask)) : 0;
         bool ok = Send(window, dt::Configure, flags) == 0;
@@ -320,6 +346,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
         if (!settingsUi) {
+            Progress(L"Saving settings in Dia... ");
             HRESULT saved = static_cast<HRESULT>(Send(window, dt::SaveSelection));
             if (FAILED(saved)) {
                 std::wcerr << L"Changes applied for this session, but preferences could not be saved.\n";

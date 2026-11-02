@@ -11,7 +11,9 @@ The macOS installer and Rust CLI do not manage this backend.
 
 | Windows switch | Upstream tweak | Selector |
 | --- | --- | --- |
-| `--settings` (or no arguments) | Settings UI and saved selection | Dia Settings → Patches |
+| `--gui` (or no arguments) | Windows control panel | `DiaTweaks.Gui.exe` |
+| `--status` | Read-only session state and diagnostics | Existing session only |
+| `--settings` | Settings UI and saved selection | Dia Settings → Patches |
 | `--hide-toolbar --reveal-toolbar` | `revealToolbarOnHover` (experimental) | Pointer/focus policy on the hidden toolbar's own window and pane |
 | `--hide-chat` | `hideChatButton` | `ChatButton` |
 | `--hide-sidebar` | `hideSidebarButton` | `SidebarToggleButton` |
@@ -23,7 +25,7 @@ The macOS installer and Rust CLI do not manage this backend.
 | `--hide-spaces` | Windows addition | `SpaceSwitcherButton` |
 | `--unload` / `--detach` | Disconnect the current add-on; keep saved choices | Restore UI, remove Settings handlers, unsubscribe |
 | `--reload` | Disconnect and attach this build with saved choices | New cached DLL copy |
-| `--restore` | Restore this session's overrides | Saved original properties |
+| `--restore` / `--reset-settings` | Restore this session's overrides | Saved original properties |
 
 The button and extensions selectors were observed in a complete UI Automation
 inspection of Dia `1.5.0.588`, x64, with sidebar tabs. Toolbar hosts were identified
@@ -67,7 +69,8 @@ powershell -NoProfile -File windows\Build.ps1
 ```
 
 This compiles and runs selector-policy tests and a mock XAML service test, then
-builds `windows/build/DiaTweaks.exe` and `windows/build/DiaTweaks.Tap.dll`.
+builds `windows/build/DiaTweaks.exe`, `windows/build/DiaTweaks.Gui.exe` and
+`windows/build/DiaTweaks.Tap.dll`.
 The mock exercises UI-thread dispatch, matching, property readback, restoration,
 binding preservation and rollback. New checks cover sidebar-header ancestry,
 unrelated overflow menus, high-bit protocol fields and sidebar preferences across sessions. It also removes hidden visuals, invalidates
@@ -75,7 +78,7 @@ their old handles, reintroduces the same object under a new handle, and tests
 failed restoration and retry. It does not simulate the actual WinUI loader.
 It retires replaced boxed values and runs repeated sidebar-only, Chat-only and
 combined hide/restore cycles, checking both button visibility and ownership.
-The Windows workflow runs these checks and uploads those two output files.
+The Windows workflow runs these checks and uploads all three output files.
 Persistence tests use disposable registry keys to model different launcher and
 Dia registry views, save through the real Settings IPC path, and load the saved
 choice into fresh backend sessions. They also check invalid data and types,
@@ -85,7 +88,34 @@ callbacks, session recreation in the same process, and saved-choice preservation
 
 ## Run
 
-Keep the EXE and DLL in the same folder. Open Dia, then run without elevation:
+Keep **DiaTweaks.Gui.exe**, **DiaTweaks.exe** and **DiaTweaks.Tap.dll** in the same
+folder. Double-click **DiaTweaks.Gui.exe** for the native Windows control panel.
+Running DiaTweaks.exe with no arguments, or with --gui, opens that panel too.
+
+The panel has **Load**, **Unload**, **Reload**, **Reset settings**,
+**Status / diagnostics** and **CLI help** actions. It includes a Dia process
+selector with **Refresh processes**, an animated progress bar, live stage text,
+and a scrollable log with **Copy log** and **Clear log**. Controller errors and
+exit codes appear in the window. Actions run in a separate worker process and
+prevent overlapping requests; closing during an action waits for it to finish.
+The panel itself makes no browser changes until an action is selected.
+
+**Load** attaches and applies saved choices. **Unload** disconnects while keeping
+those choices. **Reload** reconnects and applies them again. **Reset settings**
+is the GUI action for --restore / --reset-settings: restore owned changes and
+save all tweaks as off. Reset uses Dia's own registry view, so Dia must be open;
+there is no external registry-view fallback. **Status** reads an existing
+session without loading, replacing or changing it. CLI aliases share one button;
+--pid is represented by the process selector. Tweak switches remain in Dia's
+Settings rather than being duplicated in the control panel.
+
+Native GUI tests create real controls and execute the CLI with captured pipes.
+They test help, action-button/process routing, progress and error display,
+control disabling and deferred close. Mutation tests deliberately target the
+test executable's PID, so they cannot patch a running Dia during a local build.
+Actual browser loading still needs on-device testing.
+
+For scripts, open Dia and run without elevation:
 
 ```powershell
 .\DiaTweaks.exe --settings
@@ -123,7 +153,7 @@ choices for all nine switches to help verify restart behavior.
 
 ```powershell
 .\DiaTweaks.exe --unload
-# Replace the EXE and DLL with the new build, then:
+# Replace all three files with the new build, then:
 .\DiaTweaks.exe --settings
 # Or reconnect the current/new build and reapply saved choices:
 .\DiaTweaks.exe --reload
@@ -134,7 +164,7 @@ versions do not implement detach and lock the original DLL. From protocol 10 on,
 the launcher loads a uniquely named session copy under the user's temporary
 DiaTweaks directory; the downloaded EXE and DLL stay replaceable. A new build's
 launcher automatically detaches a compatible older session before attaching.
-Both files must come from the same build. Each production build gets a distinct
+All three files must come from the same build. Each production build gets a distinct
 COM class and control-window class to avoid reusing an old build's factory.
 
 The `--unload` name means **logical detachment**, not physically unmapping the

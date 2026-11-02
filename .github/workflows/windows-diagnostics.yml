@@ -36,11 +36,16 @@ jobs:
           if ($LASTEXITCODE -ne 2) { throw 'Conflicting reload was not rejected.' }
           & .\windows\build\DiaTweaks.exe --reveal-toolbar
           if ($LASTEXITCODE -ne 2) { throw 'Hover dependency was not enforced.' }
+          & .\windows\build\DiaTweaks.exe --status --restore
+          if ($LASTEXITCODE -ne 2) { throw 'Conflicting status was not rejected.' }
+          & .\windows\build\DiaTweaks.exe --gui --reload
+          if ($LASTEXITCODE -ne 2) { throw 'Conflicting GUI command was not rejected.' }
           exit 0
       - uses: actions/upload-artifact@v4
         with:
           name: DiaTweaks-Windows-x64-experimental
           path: |
+            windows/build/DiaTweaks.Gui.exe
             windows/build/DiaTweaks.exe
             windows/build/DiaTweaks.Tap.dll
             windows/README.md
