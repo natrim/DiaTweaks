@@ -6,6 +6,7 @@
 namespace dt {
 std::shared_ptr<void> TrackToolbar(IInspectable* object) noexcept;
 HRESULT CompactToolbarRow(std::shared_ptr<void> const& region, bool compact) noexcept;
+void DetachToolbarViewport(std::shared_ptr<void> const& region) noexcept;
 HRESULT FlushToolbarLayout(std::shared_ptr<void> const& region) noexcept;
 std::wstring ToolbarLayoutTrace(std::shared_ptr<void> const& region);
 HoverSample ReadToolbarHover(std::shared_ptr<void> const& region, bool revealed) noexcept;

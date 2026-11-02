@@ -11,7 +11,7 @@
 
 namespace {
 struct Target;
-struct Hook { WNDPROC original = nullptr; std::weak_ptr<Target> target; Target* identity = nullptr; };
+struct Hook { WNDPROC original = nullptr; std::weak_ptr<Target> target; Target* identity = nullptr; bool installed = false; };
 std::recursive_mutex gate;
 std::map<HWND, Hook> hooks;
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
@@ -33,7 +33,7 @@ void Suspend(Target* target) {
         // Another subclass may now be above ours. Keep a dormant forwarding
         // entry in that case; never remove somebody else's procedure chain.
         if (IsWindow(hwnd) && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)) == WindowProc)
-            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(hook.original));
+            if (SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(hook.original))) hook.installed=false;
         hook.target.reset(); hook.identity=nullptr;
     }
     // Dormant entries protect callbacks that were already entering our proc
@@ -60,7 +60,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     LRESULT result = original ? CallWindowProcW(original, hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
     if (msg == WM_NCDESTROY) {
         std::lock_guard lock(gate);
-        if (auto it = hooks.find(hwnd); it != hooks.end()) { it->second.target.reset(); it->second.identity=nullptr; }
+        if (auto it = hooks.find(hwnd); it != hooks.end()) { it->second.target.reset(); it->second.identity=nullptr; it->second.installed=false; }
     }
     if (msg != WM_WINDOWPOSCHANGING || !lp || !target) return result;
     auto pos = reinterpret_cast<WINDOWPOS*>(lp);
@@ -96,13 +96,17 @@ HRESULT Attach(HWND hwnd, std::shared_ptr<Target> const& target) {
     if (it != hooks.end()) {
         auto previous = it->second.target.lock();
         if (previous && previous != target && previous->enabled) return HRESULT_FROM_WIN32(ERROR_BUSY);
-        if (current == WindowProc) { it->second.target = target; it->second.identity=target.get(); return S_OK; }
+        if (current == WindowProc || (it->second.installed && current != it->second.original)) {
+            // Reuse a dormant link below another subclass. Installing our same
+            // procedure above that chain again would recurse into itself.
+            it->second.target = target; it->second.identity=target.get(); it->second.installed=true; return S_OK;
+        }
     }
     for (auto dead=hooks.begin(); dead!=hooks.end();) {
         if (dead->second.target.expired() && !IsWindow(dead->first)) dead=hooks.erase(dead); else ++dead;
     }
     if (hooks.size() >= 512 && !hooks.count(hwnd)) return E_OUTOFMEMORY;
-    hooks[hwnd] = {current, target, target.get()};
+    hooks[hwnd] = {current, target, target.get(), true};
     SetLastError(0);
     auto previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(WindowProc));
     if (!previous && GetLastError()) { auto error=GetLastError(); hooks.erase(hwnd); return HRESULT_FROM_WIN32(error); }

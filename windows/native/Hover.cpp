@@ -309,13 +309,18 @@ HRESULT CompactRow(Region& region, RowDefinition const& row) {
     return S_OK;
 }
 }
+void dt::DetachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
+    if (!value) return;
+    auto region=static_cast<Region*>(value.get());
+    dt::SuspendNativeViewportGuard(region->nativeGuard);
+    region->nativeLayout.revoke(); region->watchingNative=false;
+}
 HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) noexcept {
     if (!value) return S_OK;
     auto region=static_cast<Region*>(value.get());
     try {
         if (!compact) {
-            dt::SuspendNativeViewportGuard(region->nativeGuard);
-            region->nativeLayout.revoke(); region->watchingNative=false;
+            DetachToolbarViewport(value);
             auto row=RestoreExcept(region->rows,[](auto const&){return false;});
             auto wrapper=RestoreExcept(region->containers,[](auto const&){return false;});
             return FAILED(row)?row:wrapper;

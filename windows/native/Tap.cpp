@@ -334,6 +334,7 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
             pendingRecent.erase(static_cast<InstanceHandle>(wp));
             auto it = buttons.find(static_cast<InstanceHandle>(wp));
             if (it != buttons.end()) {
+                if (it->second.target & dt::ToolbarParts) dt::DetachToolbarViewport(it->second.hoverRegion);
                 // Removal from the visual tree is not proof of object destruction.
                 if (it->second.active) it->second.detached = true;
                 else buttons.erase(it);

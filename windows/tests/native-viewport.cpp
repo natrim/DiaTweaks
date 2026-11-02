@@ -8,6 +8,8 @@
 
 namespace {
 constexpr UINT Attempt=WM_APP+70;
+WNDPROC nextExtra=nullptr;
+LRESULT CALLBACK Extra(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) { return CallWindowProcW(nextExtra,hwnd,msg,wp,lp); }
 void Check(bool yes,char const* text) { if (!yes) throw std::runtime_error(text); }
 LRESULT CALLBACK Proc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     if (msg==Attempt) {
@@ -38,6 +40,7 @@ void AttemptSize(HWND hwnd,RECT bad) {
 }
 int main() {
     try {
+        std::thread([] { Sleep(15000); std::cerr << "Native viewport test timed out\n"; TerminateProcess(GetCurrentProcess(),99); }).detach();
         WNDCLASSW c{}; c.hInstance=GetModuleHandleW(nullptr); c.lpfnWndProc=Proc; c.lpszClassName=L"ViewportTestOwner";
         Check(RegisterClassW(&c)!=0,"register owner");
         c.lpszClassName=L"Chrome_WidgetWin_1"; Check(RegisterClassW(&c)!=0,"register native host");
@@ -73,6 +76,17 @@ int main() {
         AttemptSize(view,bad);
         Check(Same(Rect(view,owner),bad),"toolbar reveal releases geometry constraint");
         Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,full)),"re-arm after reveal");
+        nextExtra=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(view,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(Extra)));
+        dt::SuspendNativeViewportGuard(guard);
+        Check(reinterpret_cast<WNDPROC>(GetWindowLongPtrW(view,GWLP_WNDPROC))==Extra,"preserve a later subclass");
+        AttemptSize(view,bad);
+        Check(Same(Rect(view,owner),bad),"dormant link passes native geometry through");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,full)),"reuse dormant link without stacking it twice");
+        AttemptSize(view,bad);
+        Check(Same(Rect(view,owner),full),"reactivated middle link constrains native size");
+        dt::SuspendNativeViewportGuard(guard);
+        SetWindowLongPtrW(view,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(original));
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,full)),"re-arm after removing later subclass");
         guard.reset();
         Check(GetWindowLongPtrW(view,GWLP_WNDPROC)==original,"guard destruction removes active procedure");
         DestroyWindow(owner);

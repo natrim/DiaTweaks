@@ -165,6 +165,10 @@ int main() {
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->PageElement()->pageFlags == 0,
               "disabling edge-to-edge restores page styles while toolbar stays hidden");
         Check(SendMessageW(hwnd, dt::PageOwned, 0, 0) == 0 && fake->Compacted(11), "toolbar compaction owns no page styling");
+        unsigned nativeDetaches=toolbar->viewportDetaches;
+        fake->Drop(11); Pump();
+        Check(toolbar->viewportDetaches>nativeDetaches,"removed toolbar releases its native viewport guard before replacement");
+        fake->ReAdd(11); Pump();
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore combined mode test");
         fake->PageElement()->failPageStyle = true;
         Check(SendMessageW(hwnd, dt::Configure, dt::PageFlags, 0) == -1, "unsupported page style cannot report success");

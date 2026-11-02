@@ -22,7 +22,7 @@ public:
     bool headerPeers = false;
     dt::HoverSample hoverSample{true};
     bool compacted = false, failLayoutRestore = false, failLayoutFlush = false;
-    unsigned layoutFlushes = 0;
+    unsigned layoutFlushes = 0, viewportDetaches = 0;
     bool compactedAtFlush = false;
     std::function<void()> onLayoutFlush;
     bool failPageStyle = false, inlineSidebar = true;
@@ -282,6 +282,9 @@ inline dt::HoverSample dt::ReadToolbarHover(std::shared_ptr<void> const& region,
     return region ? static_cast<FakeElement*>(region.get())->hoverSample : HoverSample{};
 }
 
+inline void dt::DetachToolbarViewport(std::shared_ptr<void> const& region) noexcept {
+    if (region) ++static_cast<FakeElement*>(region.get())->viewportDetaches;
+}
 inline HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& region) noexcept {
     if (!region) return S_OK;
     auto element = static_cast<FakeElement*>(region.get());
