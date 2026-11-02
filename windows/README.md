@@ -167,6 +167,8 @@ launcher automatically detaches a compatible older session before attaching.
 All three files must come from the same build. Each production build gets a distinct
 COM class and control-window class to avoid reusing an old build's factory.
 
+Close the control panel before replacing DiaTweaks.Gui.exe; Dia itself can stay open.
+
 The `--unload` name means **logical detachment**, not physically unmapping the
 DLL. It restores owned changes, removes the Patches page and event handlers,
 unsubscribes on a worker thread, and removes the session's control window. It

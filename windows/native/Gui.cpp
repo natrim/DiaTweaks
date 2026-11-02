@@ -109,13 +109,14 @@ struct Panel {
     bool busy = false, closing = false, error = false;
     int action = 0;
     DWORD requestedPid = 0;
+    std::wstring creationError;
     ~Panel() { if (worker) CloseHandle(worker); DeleteFonts(); }
     int Scale(int value) const { return MulDiv(value, static_cast<int>(dpi), 96); }
     void DeleteFonts() { if (normal) DeleteObject(normal); if (heading) DeleteObject(heading); if (mono) DeleteObject(mono); normal = heading = mono = nullptr; }
     HWND Add(wchar_t const* cls, wchar_t const* text, DWORD style, int id = 0, DWORD extended = 0) {
-        HWND control = CreateWindowExW(extended, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
+        HWND control = CreateWindowExW(extended, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, Scale(100), Scale(30),
             window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-        if (!control) throw std::runtime_error("Cannot create a control-panel control.");
+        if (!control) throw std::runtime_error("Cannot create control " + std::to_string(id) + "; Windows error " + std::to_string(GetLastError()) + ".");
         return control;
     }
     void Fonts() {
@@ -295,11 +296,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) noe
         case WM_DESTROY: PostQuitMessage(0); return 0;
         }
     } catch (std::exception const& error) {
-        if (message == WM_CREATE) return -1;
+        if (message == WM_CREATE) { panel->creationError = Decode(error.what()); return -1; }
         if (panel->log) panel->Append(Decode(error.what()));
         panel->error = true;
         SetWindowTextW(panel->status, L"Control-panel error. See log below.");
-    } catch (...) { if (message == WM_CREATE) return -1; }
+    } catch (...) { if (message == WM_CREATE) { panel->creationError = L"Unexpected error creating controls."; return -1; } }
     return DefWindowProcW(window, message, wp, lp);
 }
 HWND CreatePanel(Panel& panel) {
@@ -310,8 +311,17 @@ HWND CreatePanel(Panel& panel) {
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     cls.hbrBackground = GetSysColorBrush(COLOR_BTNFACE); cls.lpszClassName = GuiClass;
     if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
-    return CreateWindowExW(WS_EX_CONTROLPARENT, GuiClass, L"DiaTweaks - Windows control panel", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, panel.Scale(900), panel.Scale(680), nullptr, nullptr, cls.hInstance, &panel);
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    int width = panel.Scale(900), height = panel.Scale(680);
+    if (work.right > work.left && work.bottom > work.top) {
+        width = (std::min)(width, static_cast<int>(work.right - work.left - 32));
+        height = (std::min)(height, static_cast<int>(work.bottom - work.top - 32));
+    }
+    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, GuiClass, L"DiaTweaks - Windows control panel", WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, width, height, nullptr, nullptr, cls.hInstance, &panel);
+    if (!window && panel.creationError.empty()) panel.creationError = L"CreateWindow failed; Windows error " + std::to_wstring(GetLastError()) + L".";
+    return window;
 }
 }
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int show) {
@@ -332,7 +342,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int show) {
     } catch (std::exception const& error) { argumentError = Decode(error.what()); }
     if (args) LocalFree(args);
     HWND window = CreatePanel(panel);
-    if (!window) { MessageBoxW(nullptr, L"Could not create the DiaTweaks control panel.", L"DiaTweaks", MB_ICONERROR); return 1; }
+    if (!window) { MessageBoxW(nullptr, (L"Could not create the DiaTweaks control panel.\n" + panel.creationError).c_str(), L"DiaTweaks", MB_ICONERROR); return 1; }
     if (!argumentError.empty()) { panel.Append(argumentError); panel.error = true; SetWindowTextW(panel.status, L"Invalid launch arguments. See log below."); }
     ShowWindow(window, show); UpdateWindow(window);
     MSG message{};

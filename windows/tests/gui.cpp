@@ -21,6 +21,7 @@ int main() {
     try {
         Panel panel;
         HWND window = CreatePanel(panel);
+        if (!window) std::wcerr << panel.creationError << L"\n";
         CheckGui(window != nullptr, "create real native controls");
         for (auto const& action : Actions) CheckGui(GetDlgItem(window, action.id) != nullptr, "action button exists");
         CheckGui(GetDlgItem(window, CopyLog) && GetDlgItem(window, ClearLog) && panel.process && panel.progress, "log and process controls exist");
