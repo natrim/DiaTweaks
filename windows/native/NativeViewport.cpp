@@ -17,7 +17,7 @@ std::recursive_mutex gate;
 std::map<HWND, Hook> hooks;
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 void Position(HWND, HWND, RECT);
-void Clip(HWND,std::shared_ptr<Target> const&);
+HRESULT Clip(HWND,std::shared_ptr<Target> const&);
 void FinishDetach(HWND);
 HRESULT Attach(HWND, std::shared_ptr<Target> const&);
 UINT SyncMessage() { static UINT message=RegisterWindowMessageW(L"DiaTweaks.NativeViewport.SyncBounds.v1"); return message; }
@@ -57,18 +57,19 @@ void FinishDetach(HWND hwnd) {
         if (SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(hook.original))) hook.installed=false;
     hook.pendingDetach=false;
 }
-void Clip(HWND hwnd,std::shared_ptr<Target> const& target) {
+HRESULT Clip(HWND hwnd,std::shared_ptr<Target> const& target) {
     std::shared_ptr<dt::NativeViewportClip> clip; int top=0;
     {
         std::lock_guard lock(gate);
         auto it=hooks.find(hwnd);
-        if (it==hooks.end() || !target || !target->enabled) return;
+        if (it==hooks.end() || !target || !target->enabled) return S_OK;
         clip=it->second.clip; top=target->occludedTop;
     }
     wchar_t type[64]{}; GetClassNameW(hwnd,type,64);
-    if (std::wstring_view(type)!=L"Chrome_WidgetWin_1") return;
+    if (std::wstring_view(type)!=L"Chrome_WidgetWin_1") return S_OK;
     auto hr=clip->Set(hwnd,top);
     if (FAILED(hr)) { std::lock_guard lock(gate); target->error=hr; }
+    return hr;
 }
 Target::~Target() { Suspend(this); }
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -201,7 +202,8 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
             std::lock_guard lock(gate);
             bool changed=!target->enabled || target->owner!=owner || !Same(target->client,client) || target->occludedTop!=occludedTop;
             target->owner=owner; target->client=client; target->enabled=true; target->occludedTop=(std::max)(0,occludedTop);
-            if (!changed && !discover) return S_OK;
+            if (!changed && !discover) return target->error;
+            target->error=S_OK;
             for (auto const& [hwnd,hook] : hooks) if (hook.identity==target.get() && IsWindow(hwnd) && IsChild(owner,hwnd)) windows.push_back(hwnd);
         }
         if (discover) {
@@ -241,10 +243,12 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
             auto hr=Attach(hwnd,target);
             if (FAILED(hr)) { result=hr; continue; }
             Position(hwnd,owner,client);
-            if (GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId()) Clip(hwnd,target);
+            if (GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId()) {
+                auto clipped=Clip(hwnd,target); if (FAILED(clipped)) result=clipped;
+            }
             else PostMessageW(hwnd,SyncMessage(),0,0);
         }
-        { std::lock_guard lock(gate); target->error=result; }
+        { std::lock_guard lock(gate); if (FAILED(result)) target->error=result; }
         return result;
     } catch (...) { return E_FAIL; }
 }
