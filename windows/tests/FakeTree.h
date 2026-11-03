@@ -197,7 +197,7 @@ public:
         if (index != 11 || !nodes.count(canonical) || value >= created.size()) return E_INVALIDARG;
         if (retiredValues.count(value)) { ++staleValueWrites; return E_INVALIDARG; }
         if (created[static_cast<size_t>(value)] == L"Visible" && elements.count(canonical))
-            Check(!elements.at(canonical)->compacted, "row layout must be restored before showing toolbar");
+            Check(!elements.at(canonical)->compacted || elements.at(canonical)->overlay, "show toolbar only with restored row or floating placement");
         if (!ignoreWrites) {
             if (assignedValue[canonical] && assignedValue[canonical] != value) retiredValues.insert(assignedValue[canonical]);
             assignedValue[canonical] = value;
@@ -213,7 +213,7 @@ public:
         if (assignedValue[canonical]) retiredValues.insert(assignedValue[canonical]);
         assignedValue[canonical] = 0;
         if (nodes.at(canonical).defaultValue == std::wstring_view(L"Visible") && elements.count(canonical))
-            Check(!elements.at(canonical)->compacted, "row layout must be restored before clearing Visibility");
+            Check(!elements.at(canonical)->compacted || elements.at(canonical)->overlay, "restore visibility only with restored row or floating placement");
         nodes.at(canonical).value = nodes.at(canonical).defaultValue; nodes.at(canonical).local = false; ++clears;
         ReinsertIfVisible(canonical);
         return S_OK;
