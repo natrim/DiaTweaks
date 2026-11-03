@@ -22,7 +22,7 @@ public:
     bool headerPeers = false;
     dt::HoverSample hoverSample{true};
     bool compacted = false, failLayoutRestore = false, failLayoutFlush = false;
-    bool overlay = false, failOverlay = false;
+    bool overlay = false, failOverlay = false, captionHidden=false;
     unsigned layoutFlushes = 0, viewportDetaches = 0;
     bool compactedAtFlush = false;
     std::function<void()> onLayoutFlush;
@@ -322,6 +322,10 @@ inline HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& region) noexc
     return element->failLayoutFlush ? E_FAIL : S_OK;
 }
 
+inline HRESULT dt::SetToolbarCaption(std::shared_ptr<void> const& region,bool hidden) noexcept {
+    if (!region) return hidden ? E_FAIL : S_OK;
+    static_cast<FakeElement*>(region.get())->captionHidden=hidden; return S_OK;
+}
 inline HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& region, bool enabled) noexcept {
     if (!region) return enabled ? E_FAIL : S_OK;
     auto element=static_cast<FakeElement*>(region.get());

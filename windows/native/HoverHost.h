@@ -7,6 +7,7 @@ namespace dt {
 struct ToolbarPolicyApi { void* context; void (*changed)(void*); };
 void WatchToolbarPolicy(std::shared_ptr<void> const&, ToolbarPolicyApi) noexcept;
 std::shared_ptr<void> TrackToolbar(IInspectable* object) noexcept;
+HRESULT SetToolbarCaption(std::shared_ptr<void> const& region, bool hidden) noexcept;
 HRESULT SetToolbarOverlay(std::shared_ptr<void> const& region, bool enabled) noexcept;
 HRESULT CompactToolbarRow(std::shared_ptr<void> const& region, bool compact) noexcept;
 bool InheritToolbarViewport(std::shared_ptr<void> const&, std::shared_ptr<void> const&) noexcept;

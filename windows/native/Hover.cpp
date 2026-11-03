@@ -22,6 +22,11 @@
 #include <cmath>
 #include <limits>
 #include <functional>
+#include <type_traits>
+#include <winrt/Microsoft.UI.Windowing.h>
+#include "CaptionPolicy.h"
+#include <map>
+#include <mutex>
 
 namespace {
 using namespace winrt;
@@ -107,11 +112,24 @@ struct OverlayLayout {
 };
 template<class T> bool OverlayEqual(Object const& a,Object const& b) {
     auto left=a.try_as<Windows::Foundation::IReference<T>>(), right=b.try_as<Windows::Foundation::IReference<T>>();
-    return left && right && left.Value()==right.Value();
+    if (left && right) return left.Value()==right.Value();
+    if constexpr (std::is_enum_v<T>) {
+        auto numeric=[](Object const& value,T& out) {
+            if (auto boxed=value.try_as<Windows::Foundation::IReference<T>>()) { out=boxed.Value(); return true; }
+            if (auto boxed=value.try_as<Windows::Foundation::IReference<int32_t>>()) { out=static_cast<T>(boxed.Value()); return true; }
+            return false;
+        };
+        T aValue{}, bValue{};
+        return numeric(a,aValue) && numeric(b,bValue) && aValue==bValue;
+    }
+    return false;
 }
 template<class T> bool OverlayPlain(FrameworkElement const& object,DependencyProperty const& property) {
     auto local=object.ReadLocalValue(property);
-    return local==DependencyProperty::UnsetValue() || static_cast<bool>(local.try_as<Windows::Foundation::IReference<T>>());
+    if (object.GetBindingExpression(property)) return false;
+    if (local==DependencyProperty::UnsetValue() || local.try_as<Windows::Foundation::IReference<T>>()) return true;
+    if constexpr (std::is_enum_v<T>) return static_cast<bool>(local.try_as<Windows::Foundation::IReference<int32_t>>());
+    return false;
 }
 template<class T> HRESULT OverlaySet(OverlayLayout& layout,FrameworkElement const& object,DependencyProperty const& property,T value) {
     auto it=std::find_if(layout.properties.begin(),layout.properties.end(),[&](auto const& p) { return p.object==object && p.property==property; });
@@ -132,12 +150,43 @@ template<class T> HRESULT OverlaySet(OverlayLayout& layout,FrameworkElement cons
     }
     return OverlayEqual<T>(object.GetValue(property),desired) ? S_OK : E_FAIL;
 }
+struct CaptionState {
+    Microsoft::UI::Windowing::AppWindowTitleBar bar{nullptr};
+    dt::CaptionLease lease;
+    HRESULT Restore() noexcept {
+        try {
+            if (!bar) return S_OK;
+            return lease.Update(false,[&] {return static_cast<int>(bar.PreferredHeightOption());},
+                [&](int value) {bar.PreferredHeightOption(static_cast<Microsoft::UI::Windowing::TitleBarHeightOption>(value));}) ? S_OK : E_FAIL;
+        } catch (...) {return to_hresult();}
+    }
+    ~CaptionState() {Restore();}
+};
+std::shared_ptr<CaptionState> CaptionFor(HWND hwnd) {
+    static std::mutex mutex;
+    static std::map<HWND,std::weak_ptr<CaptionState>> windows;
+    std::lock_guard lock(mutex);
+    for (auto it=windows.begin();it!=windows.end();) {if (it->second.expired()) it=windows.erase(it); else ++it;}
+    auto current=windows[hwnd].lock();
+    if (!current) {current=std::make_shared<CaptionState>(); windows[hwnd]=current;}
+    return current;
+}
+struct OverlayWatch {
+    weak_ref<FrameworkElement> object;
+    DependencyProperty property{nullptr};
+    long long token=0;
+    ~OverlayWatch() {try {if (auto item=object.get()) item.UnregisterPropertyChangedCallback(property,token);} catch (...) {}}
+};
 struct Region {
     weak_ref<FrameworkElement> pane, toolbar, bookmarks, page, owner;
     std::vector<std::unique_ptr<RowLease>> rows;
     std::vector<std::unique_ptr<ElementLease>> containers;
     double height = 56;
     bool overlayEnabled=false, overlayEditing=false;
+    std::wstring overlayStage=L"idle";
+    std::vector<std::unique_ptr<OverlayWatch>> overlayWatches;
+    weak_ref<FrameworkElement> watchedOverlay;
+    std::shared_ptr<CaptionState> caption;
     std::shared_ptr<OverlayLayout> overlay=std::make_shared<OverlayLayout>();
     dt::ViewportTrace trace;
     std::shared_ptr<void> nativeGuard = dt::CreateNativeViewportGuard();
@@ -233,6 +282,7 @@ std::shared_ptr<void> dt::TrackToolbar(IInspectable* object) noexcept {
         if (!hwnd || !IsWindow(hwnd)) return {};
         auto region = std::make_shared<Region>();
         region->pane = pane; region->toolbar = toolbar; region->owner = host;
+        region->caption=CaptionFor(hwnd);
         region->page = Named(pane, L"VariantHost");
         region->bookmarks = Named(pane, L"BookmarksBarHost");
         if (toolbar.ActualHeight() > 0) region->height = toolbar.ActualHeight();
@@ -419,6 +469,24 @@ HRESULT CompactRow(Region& region, RowDefinition const& row) {
     return S_OK;
 }
 }
+HRESULT dt::SetToolbarCaption(std::shared_ptr<void> const& value,bool hidden) noexcept {
+    if (!value) return hidden ? E_FAIL : S_OK;
+    auto region=static_cast<Region*>(value.get());
+    if (region->retiredViewport && hidden) return S_OK;
+    try {
+        if (!region->caption) return E_FAIL;
+        auto& state=*region->caption;
+        if (!hidden) return state.Restore();
+        auto pane=region->pane.get();
+        if (!pane || !pane.XamlRoot()) return E_FAIL;
+        auto window=Microsoft::UI::Windowing::AppWindow::GetFromWindowId(pane.XamlRoot().ContentIslandEnvironment().AppWindowId());
+        auto bar=window.TitleBar();
+        if (!bar.ExtendsContentIntoTitleBar()) return E_NOTIMPL;
+        state.bar=bar;
+        return state.lease.Update(true,[&] {return static_cast<int>(bar.PreferredHeightOption());},
+            [&](int option) {bar.PreferredHeightOption(static_cast<Microsoft::UI::Windowing::TitleBarHeightOption>(option));}) ? S_OK : E_FAIL;
+    } catch (...) {return to_hresult();}
+}
 HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& value,bool enabled) noexcept {
     if (!value) return enabled ? E_FAIL : S_OK;
     auto region=static_cast<Region*>(value.get());
@@ -428,12 +496,14 @@ HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& value,bool enabled) n
     try {
         if (!enabled) {
             region->overlayEnabled=false;
+            region->overlayWatches.clear(); region->watchedOverlay={};
             return region->overlay->Restore();
         }
         // Bookmarks participate in the same chrome wrapper as navigation.
         // Only the navigation region owns the shared grid placement changes.
         auto host=region->owner.get(), toolbar=region->toolbar.get(), pane=region->pane.get();
         if (host!=toolbar) { region->overlayEnabled=true; return S_OK; }
+        region->overlayStage=L"find pane";
         if (!host || !pane) return E_NOTIMPL;
         auto page=Named(pane,L"VariantHost");
         auto branch=[&](FrameworkElement item) {
@@ -444,6 +514,7 @@ HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& value,bool enabled) n
             }
             return FrameworkElement{nullptr};
         };
+        region->overlayStage=L"find grid branches";
         auto chrome=branch(host), content=branch(page);
         auto grid=pane.try_as<Grid>();
         if (!grid || !chrome || !content || chrome==content ||
@@ -452,25 +523,39 @@ HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& value,bool enabled) n
         if (layout.active && layout.wrapper.get()!=chrome) {
             auto hr=layout.Restore(); if (FAILED(hr)) return hr;
         }
-        if (!OverlayPlain<int32_t>(chrome,Grid::RowProperty()) || !OverlayPlain<int32_t>(chrome,Grid::RowSpanProperty()) ||
-            !OverlayPlain<VerticalAlignment>(chrome,FrameworkElement::VerticalAlignmentProperty()) || !OverlayPlain<int32_t>(chrome,Canvas::ZIndexProperty())) return E_NOTIMPL;
         if (!layout.active) {
             int row=Grid::GetRow(chrome);
-            if (row==Grid::GetRow(content)) return E_NOTIMPL;
-            layout.wrapper=chrome;
-            if (row>=0 && static_cast<unsigned>(row)<grid.RowDefinitions().Size()) layout.vacatedRow=grid.RowDefinitions().GetAt(static_cast<unsigned>(row));
+            layout.wrapper=chrome; layout.vacatedRow={};
+            if (row!=Grid::GetRow(content) && row>=0 && static_cast<unsigned>(row)<grid.RowDefinitions().Size()) layout.vacatedRow=grid.RowDefinitions().GetAt(static_cast<unsigned>(row));
         }
         int pageZ=Canvas::GetZIndex(content), chromeZ=Canvas::GetZIndex(chrome);
         if (pageZ==(std::numeric_limits<int>::max)()) return E_NOTIMPL;
         auto apply=[&](auto property,auto desired) { return OverlaySet(layout,chrome,property,desired); };
         // Keep the web content's row and size unchanged. Moving the chrome
         // into that same cell makes it a top-aligned overlay, above the page.
+        region->overlayStage=L"Grid.Row";
         HRESULT hr=apply(Grid::RowProperty(),Grid::GetRow(content));
-        if (SUCCEEDED(hr)) hr=apply(Grid::RowSpanProperty(),Grid::GetRowSpan(content));
-        if (SUCCEEDED(hr)) hr=apply(FrameworkElement::VerticalAlignmentProperty(),VerticalAlignment::Top);
-        if (SUCCEEDED(hr)) hr=apply(Canvas::ZIndexProperty(),(std::max)(chromeZ,pageZ+1));
+        if (SUCCEEDED(hr)) {region->overlayStage=L"Grid.RowSpan"; hr=apply(Grid::RowSpanProperty(),Grid::GetRowSpan(content));}
+        if (SUCCEEDED(hr)) {region->overlayStage=L"VerticalAlignment"; hr=apply(FrameworkElement::VerticalAlignmentProperty(),VerticalAlignment::Top);}
+        if (SUCCEEDED(hr)) {region->overlayStage=L"Canvas.ZIndex"; hr=apply(Canvas::ZIndexProperty(),(std::max)(chromeZ,pageZ+1));}
         if (FAILED(hr)) { layout.Restore(); return hr; }
-        layout.active=true; region->overlayEnabled=true;
+        layout.active=true; region->overlayEnabled=true; region->overlayStage=L"ready";
+        if (region->watchedOverlay.get()!=chrome) {
+            region->overlayWatches.clear(); region->watchedOverlay=chrome;
+            std::weak_ptr<Region> weak=std::static_pointer_cast<Region>(value);
+            for (auto const& property:{Grid::RowProperty(),Grid::RowSpanProperty(),FrameworkElement::VerticalAlignmentProperty(),Canvas::ZIndexProperty()}) {
+                auto watch=std::make_unique<OverlayWatch>(); watch->object=chrome; watch->property=property;
+                watch->token=chrome.RegisterPropertyChangedCallback(property,[weak](auto const&,auto const&) noexcept {
+                    auto current=weak.lock();
+                    if (!current || !current->overlayEnabled || current->overlayEditing || current->retiredViewport) return;
+                    auto hr=dt::SetToolbarOverlay(current,true);
+                    if (SUCCEEDED(hr)) hr=dt::CompactToolbarRow(current,true);
+                    if (FAILED(hr)) current->traceError=hr;
+                    if (current->policy.changed) current->policy.changed(current->policy.context);
+                });
+                region->overlayWatches.push_back(std::move(watch));
+            }
+        }
         return S_OK;
     } catch (...) {
         auto error=to_hresult();
@@ -612,7 +697,8 @@ std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const& value) {
     if (!value) return L"VIEWPORT TIMING unavailable\n";
     auto region = static_cast<Region*>(value.get());
     auto report = L"Floating toolbar: enabled="+std::to_wstring(region->overlayEnabled)+L" ownedProperties="+
-        std::to_wstring(region->overlay->properties.size())+L"\n"+dt::NativeViewportGuardReport(region->nativeGuard) + L"Viewport handoffs="+
+        std::to_wstring(region->overlay->properties.size())+L" stage="+region->overlayStage+L" captionHidden="+
+        std::to_wstring(region->caption && region->caption->lease.owned)+L"\n"+dt::NativeViewportGuardReport(region->nativeGuard) + L"Viewport handoffs="+
         std::to_wstring(region->viewportHandoffs)+L"\n"+region->trace.Report();
     if (FAILED(region->traceError)) {
         wchar_t error[80]{};

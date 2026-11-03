@@ -9,6 +9,10 @@
 #include "PageClipPolicy.h"
 #include "Rules.h"
 #include "Layout.h"
+#include "NativeViewport.h"
+#include <winrt/Microsoft.UI.Content.h>
+#include <winrt/Microsoft.UI.Interop.h>
+#include <cmath>
 #include <sstream>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Composition.h>
@@ -116,6 +120,9 @@ struct PageFrame {
     std::vector<ClipLease> clips;
     std::vector<weak_ref<FrameworkElement>> sidebars;
     ULONGLONG scanned = 0;
+    std::shared_ptr<void> nativeGuard=dt::CreateNativeViewportGuard();
+    FrameworkElement::LayoutUpdated_revoker nativeLayout;
+    bool watchingNative=false;
     bool ready = false, corners = false, detached = false;
     HRESULT error = S_OK;
 };
@@ -125,7 +132,7 @@ struct State : std::enable_shared_from_this<State> {
     unsigned flags = 0;
     HRESULT error = S_OK;
     std::wstring detail;
-    bool updating = false;
+    bool updating = false, propertyCallback=false;
     unsigned writes = 0, propertyRepairs = 0;
 };
 void WatchProperty(State& state, Lease& lease) {
@@ -136,7 +143,11 @@ void WatchProperty(State& state, Lease& lease) {
     watch->token=lease.object.RegisterPropertyChangedCallback(lease.property,[weak](auto const&,auto const&) noexcept {
         if (auto current=weak.lock(); current && !current->updating && (current->flags & dt::EdgeToEdge)) {
             ++current->propertyRepairs;
+            // A property callback can run inside Dia's own layout transaction.
+            // Repair values now, but let its normal pass arrange the final size.
+            current->propertyCallback=true;
             dt::ConfigurePages(current,current->flags);
+            current->propertyCallback=false;
         }
     });
     watch->registered=true;
@@ -224,6 +235,8 @@ template<class T> HRESULT Set(State& state, PageFrame& page, DependencyObject co
     return S_OK;
 }
 HRESULT Restore(PageFrame& page) {
+    page.nativeLayout.revoke(); page.watchingNative=false;
+    dt::SuspendNativeViewportGuard(page.nativeGuard);
     HRESULT error = S_OK;
     for (auto& clip : page.clips) {
         auto hr = clip.Update(false, false); if (FAILED(hr)) error = hr;
@@ -334,6 +347,33 @@ bool Initialize(PageFrame& page) {
     if (HasRoundedClip(page, FrameClips(frames, root, Bounds(host, root)))) page.corners = true;
     return true;
 }
+void PublishViewport(State& state,PageFrame& page,bool discover) noexcept {
+    try {
+        if (page.detached || !(state.flags & dt::EdgeToEdge) || (state.flags & dt::Toolbar)) {
+            dt::SuspendNativeViewportGuard(page.nativeGuard); return;
+        }
+        auto host=page.host.get();
+        if (!host || !host.XamlRoot()) return;
+        auto root=host.XamlRoot(); auto rect=Bounds(host,root.Content());
+        if (rect.Width<=32 || rect.Height<=32) return;
+        double scale=root.RasterizationScale();
+        RECT target{static_cast<LONG>(std::lround(rect.X*scale)),static_cast<LONG>(std::lround(rect.Y*scale)),
+            static_cast<LONG>(std::lround((rect.X+rect.Width)*scale)),static_cast<LONG>(std::lround((rect.Y+rect.Height)*scale))};
+        auto window=Microsoft::UI::GetWindowFromWindowId(root.ContentIslandEnvironment().AppWindowId());
+        auto hr=dt::UpdateNativeViewportGuard(page.nativeGuard,window,target,discover);
+        page.error=hr;
+    } catch (...) {page.error=to_hresult();}
+}
+void WatchViewport(State& state,PageFrame& page) {
+    if (page.watchingNative) return;
+    auto host=page.host.get(); if (!host) return;
+    auto weak=state.weak_from_this(); auto id=page.id;
+    page.nativeLayout=host.LayoutUpdated(auto_revoke,[weak,id](auto const&,auto const&) noexcept {
+        auto current=weak.lock(); if (!current || current->updating) return;
+        for (auto& item:current->pages) if (item.id==id) {PublishViewport(*current,item,false); break;}
+    });
+    page.watchingNative=true;
+}
 HRESULT Apply(State& state, PageFrame& page) {
     if (page.detached) return Restore(page);
     bool edge = (state.flags & dt::EdgeToEdge) != 0;
@@ -341,6 +381,9 @@ HRESULT Apply(State& state, PageFrame& page) {
         auto hr = Restore(page);
         page.ready = Initialize(page);
         return hr;
+    }
+    if (state.flags & dt::Toolbar) {
+        page.nativeLayout.revoke(); page.watchingNative=false; dt::SuspendNativeViewportGuard(page.nativeGuard);
     }
     page.ready = Initialize(page);
     if (!page.ready) return S_OK;
@@ -397,7 +440,7 @@ HRESULT Apply(State& state, PageFrame& page) {
             if (FAILED(hr)) result = hr;
         }
     }
-    if (state.writes != before) rootElement.UpdateLayout();
+    if (state.writes != before && !state.propertyCallback) rootElement.UpdateLayout();
     frame = Bounds(host, root);
     auto base = Baseline<Thickness>(page, host, FrameworkElement::MarginProperty());
     auto current = host.Margin();
@@ -437,7 +480,7 @@ HRESULT Apply(State& state, PageFrame& page) {
             if (FAILED(hr)) result = hr;
         }
     }
-    if (state.writes != beforeCorners) rootElement.UpdateLayout();
+    if (state.writes != beforeCorners && !state.propertyCallback) rootElement.UpdateLayout();
     // XAML CornerRadius does not cover every existing composition clip. In
     // particular the lower-corner RectangleClip can retain its native radius.
     // Change only the selected corner radii on the existing clip object.
@@ -546,6 +589,7 @@ std::wstring dt::PagesLayoutReport(std::shared_ptr<void> const& value) {
             << L" ownedProperties=" << page.leases.size() << L" hr=0x" << std::hex << static_cast<unsigned long>(page.error) << std::dec << L'\n';
         unsigned clipCorners = 0;
         for (auto const& clip : page.clips) clipCorners += clip.Owned();
+        out << dt::NativeViewportGuardReport(page.nativeGuard);
         out << L"  ownedClipCorners=" << clipCorners << L'\n';
         if (auto host = page.host.get()) out << LayoutSnapshot(reinterpret_cast<IInspectable*>(get_abi(host)));
         if (out.tellp() > 140000) { out << L"[page report limit]\n"; break; }

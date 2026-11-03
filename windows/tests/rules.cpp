@@ -1,3 +1,4 @@
+#include "../native/CaptionPolicy.h"
 #include <iostream>
 #include <stdexcept>
 #include "../native/Rules.h"
@@ -170,5 +171,18 @@ int main() {
     Check(!dt::CanOverride(true, false, false, L"Visible"), "do not replace animations or states");
     Check(!dt::CanOverride(true, true, false, L"unexpected"), "reject unknown enum values");
     Check(dt::IsCollapsed(L"Collapsed") && dt::IsCollapsed(L"1") && !dt::IsCollapsed(L"Visible"), "readback enum");
+    dt::CaptionLease caption;
+    int titleHeight=1, captionWrites=0;
+    auto readCaption=[&] {return titleHeight;};
+    auto writeCaption=[&](int value) {titleHeight=value; ++captionWrites;};
+    Check(caption.Update(true,readCaption,writeCaption) && titleHeight==2,"hide native caption cluster");
+    Check(caption.Update(true,readCaption,writeCaption) && captionWrites==1,"caption hiding is idempotent");
+    Check(caption.Update(false,readCaption,writeCaption) && titleHeight==1,"hover reveal restores original tall caption size");
+    Check(caption.Update(true,readCaption,writeCaption),"hide captions again");
+    titleHeight=0;
+    Check(caption.Update(false,readCaption,writeCaption) && titleHeight==0,"restore preserves newer app caption value");
+    titleHeight=2;
+    Check(caption.Update(true,readCaption,writeCaption) && !caption.owned,"already hidden captions stay unowned");
+    Check(caption.Update(false,readCaption,writeCaption) && titleHeight==2,"restore keeps app-hidden captions hidden");
     std::cout << "Windows selector and property policy checks passed\n";
 }

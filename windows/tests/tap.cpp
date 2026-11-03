@@ -126,7 +126,7 @@ int main() {
         fake->Hover(12, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->nodes.at(11).value == L"Visible" && fake->nodes.at(1).value == L"Collapsed", "hover reveals toolbar while preserving child preferences");
-        Check(fake->Compacted(11) && toolbar->overlay, "floating reveal keeps the reserved row empty");
+        Check(fake->Compacted(11) && toolbar->overlay && !toolbar->captionHidden, "floating reveal keeps page row empty and shows native caption controls");
         Check(fake->nodes.at(12).value == L"Collapsed", "hover does not reveal an originally hidden bookmarks bar");
         Check(SendMessageW(hwnd, dt::Query, dt::Toolbar, 0) == 0x10001, "configuration verification accepts intentional hover reveal");
         fake->ReAdd(11); Pump();
@@ -139,6 +139,7 @@ int main() {
         Sleep(260);
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->nodes.at(11).value == L"Collapsed" && fake->Compacted(11), "toolbar hides and compacts row after leaving and delay");
+        Check(toolbar->captionHidden, "caption controls hide with the toolbar");
         fake->ResetToolbarRow(11);
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->Compacted(11), "tab switch row reset is repaired without hover reveal");
@@ -150,7 +151,9 @@ int main() {
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->nodes.at(11).value == L"Collapsed", "disabling hover while revealed rehides toolbar");
         Check(fake->Compacted(11), "hide-only keeps the layout compact when hover is disabled");
         Check(!toolbar->overlay, "disabling hover restores normal toolbar placement");
+        Check(toolbar->captionHidden, "hide-only also hides caption controls");
         Check(SendMessageW(hwnd, dt::Configure, dt::RevealToolbar, 0) == 0 && fake->nodes.at(11).value == L"Visible", "hover choice can remain dormant when Hide toolbar is off");
+        Check(!toolbar->captionHidden, "disabling Hide toolbar restores native caption controls");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && fake->nodes.at(1).value == L"Visible", "restore clears hover and child effects");
         fake->Hover(11, {true}); fake->Hover(12, {true});
         Check(SendMessageW(hwnd, dt::PageQuery, dt::EdgeToEdge, 0) == 0x10001, "page layout is discovered");

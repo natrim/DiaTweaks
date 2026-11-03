@@ -51,6 +51,7 @@ int main() {
         Check(RegisterClassW(&c)!=0,"register owner");
         c.lpszClassName=L"Chrome_WidgetWin_1"; Check(RegisterClassW(&c)!=0,"register native host");
         c.lpszClassName=L"Chrome_RenderWidgetHostHWND"; Check(RegisterClassW(&c)!=0,"register renderer");
+        c.lpszClassName=L"Intermediate D3D Window"; Check(RegisterClassW(&c)!=0,"register D3D surface");
         c.lpszClassName=L"UnrelatedViewport"; Check(RegisterClassW(&c)!=0,"register unrelated class");
         HWND owner=Owner();
         HWND view=Child(owner,L"Chrome_WidgetWin_1",200,44,796,752);
@@ -86,6 +87,10 @@ int main() {
         Check(Rect(renderer,view).bottom==816,"new renderer starts at full native client height");
         AttemptSize(renderer,{0,0,client.right-4,client.bottom-40});
         Check(Rect(renderer,view).bottom==816,"replacement renderer cannot independently shrink inside its full-size host");
+        auto surface=Child(view,L"Intermediate D3D Window",0,5,client.right-5,client.bottom-10);
+        Check(Rect(surface,view).top==0 && Rect(surface,view).bottom==816,"new D3D surface starts with full viewport geometry");
+        AttemptSize(surface,{0,5,client.right-5,client.bottom-5});
+        Check(Rect(surface,view).top==0 && Rect(surface,view).bottom==816,"D3D surface cannot reintroduce the bottom inset");
         Check(dt::NativeViewportGuardReport(guard).find(L"preventedResizes=0")==std::wstring::npos,"intercepted resize attempts are reported");
         RECT beforeOverlay{}; GetClientRect(view,&beforeOverlay);
         Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,40)),"show floating toolbar");

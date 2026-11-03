@@ -460,3 +460,26 @@ Windows tests cover reveal/hide orchestration, failure recovery, native client
 size stability, clipping, original-region restoration, app-owned region changes
 and detach. Actual Dia rendering and pointer interaction still require manual
 verification.
+
+### Caption controls and viewport repair
+
+Hide toolbar now also collapses the native caption cluster through
+AppWindowTitleBar.PreferredHeightOption. Hover reveal restores its saved height
+option; hiding again collapses it. Disabling Hide toolbar or unloading restores
+the original option while preserving a newer app-owned value. No new flag is
+required. This uses the existing extended title bar and never changes window
+styles or removes the system menu.
+
+The floating layout accepts both enum and Int32 boxes for alignment and does not
+replace a binding when the effective value already matches. Scoped dependency
+property watches reapply the overlay placement if Dia resets it on a tab switch.
+Diagnostics include the last overlay stage and caption ownership.
+
+Edge-to-edge keeps its native viewport guard active even when Hide toolbar is
+off, using the actual page bounds below the visible toolbar. This guard releases
+before the hover toolbar guard takes over. Native D3D child surfaces participate
+in geometry interception alongside the Chrome host and renderer.
+Margin/Padding property repairs no longer force UpdateLayout from inside Dia's
+property callback; the normal layout pass arranges the final values together.
+The flash diagnosis remains based on geometry; these tests do not verify Dia's
+compositor frames on a user's machine.

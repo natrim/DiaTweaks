@@ -92,7 +92,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         LONG width=childRect.right-childRect.left, height=childRect.bottom-childRect.top;
         bool fullWidth=width==0 || std::abs(width-(rect.right-rect.left))<=16;
         bool fullHeight=height==0 || std::abs(height-(rect.bottom-rect.top))<=256;
-        if (owner && process==GetCurrentProcessId() && std::wstring_view(type)==L"Chrome_RenderWidgetHostHWND" &&
+        if (owner && process==GetCurrentProcessId() && (std::wstring_view(type)==L"Chrome_RenderWidgetHostHWND" || std::wstring_view(type)==L"Intermediate D3D Window") &&
             (GetWindowLongPtrW(child,GWL_STYLE)&WS_CHILD) && fullWidth && fullHeight &&
             GetParent(child)==hwnd && SUCCEEDED(Attach(child,target))) Position(child,owner,rect);
     }
@@ -212,7 +212,7 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
                 auto s=reinterpret_cast<Search*>(data);
                 if (++s->visited>128) return FALSE;
                 wchar_t type[64]{}; GetClassNameW(child,type,64);
-                if ((std::wstring_view(type)!=L"Chrome_WidgetWin_1" && std::wstring_view(type)!=L"Chrome_RenderWidgetHostHWND") ||
+                if ((std::wstring_view(type)!=L"Chrome_WidgetWin_1" && std::wstring_view(type)!=L"Chrome_RenderWidgetHostHWND" && std::wstring_view(type)!=L"Intermediate D3D Window") ||
                     !(GetWindowLongPtrW(child,GWL_STYLE)&WS_CHILD) || !IsWindowVisible(child)) return TRUE;
                 DWORD process=0; GetWindowThreadProcessId(child,&process);
                 if (process!=GetCurrentProcessId()) return TRUE;
