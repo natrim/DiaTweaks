@@ -571,8 +571,12 @@ class Tap final : public IObjectWithSite, public IVisualTreeServiceCallback {
         auto fail = [&](dt::Stage stage, HRESULT error) {
             button.failure = stage; button.error = error; return false;
         };
+        if (button.target & dt::ToolbarParts) {
+            HRESULT hr=dt::SetToolbarOverlay(button.hoverRegion,HoverEnabled());
+            if (FAILED(hr)) return fail(dt::AdjustLayout,hr);
+        }
         if ((button.target & dt::ToolbarParts) && !enable) {
-            HRESULT hr = dt::CompactToolbarRow(button.hoverRegion, false);
+            HRESULT hr = dt::CompactToolbarRow(button.hoverRegion, HoverEnabled());
             if (FAILED(hr)) return fail(dt::AdjustLayout, hr);
         }
         if (!enable && !button.active) return true;

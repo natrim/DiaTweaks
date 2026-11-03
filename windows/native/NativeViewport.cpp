@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "NativeViewport.h"
+#include "NativeViewportClip.h"
 #include <map>
 #include <mutex>
 #include <vector>
@@ -11,11 +12,13 @@
 
 namespace {
 struct Target;
-struct Hook { WNDPROC original = nullptr; std::weak_ptr<Target> target; Target* identity = nullptr; bool installed = false; };
+struct Hook { WNDPROC original = nullptr; std::weak_ptr<Target> target; Target* identity = nullptr; bool installed = false; bool pendingDetach=false; std::shared_ptr<dt::NativeViewportClip> clip=std::make_shared<dt::NativeViewportClip>(); };
 std::recursive_mutex gate;
 std::map<HWND, Hook> hooks;
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 void Position(HWND, HWND, RECT);
+void Clip(HWND,std::shared_ptr<Target> const&);
+void FinishDetach(HWND);
 HRESULT Attach(HWND, std::shared_ptr<Target> const&);
 UINT SyncMessage() { static UINT message=RegisterWindowMessageW(L"DiaTweaks.NativeViewport.SyncBounds.v1"); return message; }
 struct Target {
@@ -23,22 +26,49 @@ struct Target {
     RECT client{};
     bool enabled = false;
     unsigned corrections = 0;
+    int occludedTop = 0;
     HRESULT error = S_OK;
     ~Target();
 };
 bool Same(RECT a, RECT b) { return a.left==b.left && a.top==b.top && a.right==b.right && a.bottom==b.bottom; }
 void Suspend(Target* target) {
-    std::lock_guard lock(gate);
-    target->enabled = false;
-    for (auto& [hwnd, hook] : hooks) if (hook.identity == target) {
-        // Another subclass may now be above ours. Keep a dormant forwarding
-        // entry in that case; never remove somebody else's procedure chain.
-        if (IsWindow(hwnd) && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)) == WindowProc)
-            if (SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(hook.original))) hook.installed=false;
-        hook.target.reset(); hook.identity=nullptr;
+    std::vector<HWND> pending;
+    {
+        std::lock_guard lock(gate);
+        target->enabled=false;
+        for (auto& [hwnd,hook]:hooks) if (hook.identity==target) {
+            hook.pendingDetach=true; hook.target.reset(); hook.identity=nullptr; pending.push_back(hwnd);
+        }
     }
-    // Dormant entries protect callbacks that were already entering our proc
-    // while a different thread removed it. Drop them only after window death.
+    for (auto hwnd:pending) {
+        if (GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId()) FinishDetach(hwnd);
+        else PostMessageW(hwnd,SyncMessage(),0,0);
+    }
+}
+void FinishDetach(HWND hwnd) {
+    std::shared_ptr<dt::NativeViewportClip> clip;
+    { std::lock_guard lock(gate); auto it=hooks.find(hwnd); if (it==hooks.end() || !it->second.pendingDetach) return; clip=it->second.clip; }
+    if (FAILED(clip->Set(hwnd,0))) return;
+    std::lock_guard lock(gate);
+    auto it=hooks.find(hwnd);
+    if (it==hooks.end() || !it->second.pendingDetach) return;
+    auto& hook=it->second;
+    if (IsWindow(hwnd) && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd,GWLP_WNDPROC))==WindowProc)
+        if (SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(hook.original))) hook.installed=false;
+    hook.pendingDetach=false;
+}
+void Clip(HWND hwnd,std::shared_ptr<Target> const& target) {
+    std::shared_ptr<dt::NativeViewportClip> clip; int top=0;
+    {
+        std::lock_guard lock(gate);
+        auto it=hooks.find(hwnd);
+        if (it==hooks.end() || !target || !target->enabled) return;
+        clip=it->second.clip; top=target->occludedTop;
+    }
+    wchar_t type[64]{}; GetClassNameW(hwnd,type,64);
+    if (std::wstring_view(type)!=L"Chrome_WidgetWin_1") return;
+    auto hr=clip->Set(hwnd,top);
+    if (FAILED(hr)) { std::lock_guard lock(gate); target->error=hr; }
 }
 Target::~Target() { Suspend(this); }
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -71,7 +101,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::lock_guard lock(gate);
             if (target->enabled) { owner=target->owner; rect=target->client; }
         }
-        if (owner && IsWindow(owner) && IsChild(owner,hwnd)) Position(hwnd,owner,rect);
+        if (owner && IsWindow(owner) && IsChild(owner,hwnd)) { Position(hwnd,owner,rect); Clip(hwnd,target); }
+        FinishDetach(hwnd);
         return 0;
     }
     LRESULT result = original ? CallWindowProcW(original, hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
@@ -80,7 +111,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         { std::lock_guard lock(gate); if (target->enabled) { owner=target->owner; rect=target->client; } }
         // SWP_NOSENDCHANGING bypasses the pre-change notification. Repair
         // that path before the owner thread returns to processing paints.
-        if (owner && !IsIconic(owner) && IsChild(owner,hwnd)) Position(hwnd,owner,rect);
+        if (owner && !IsIconic(owner) && IsChild(owner,hwnd)) { Position(hwnd,owner,rect); Clip(hwnd,target); }
     }
     if (msg == WM_NCDESTROY) {
         std::lock_guard lock(gate);
@@ -123,14 +154,15 @@ HRESULT Attach(HWND hwnd, std::shared_ptr<Target> const& target) {
         if (current == WindowProc || (it->second.installed && current != it->second.original)) {
             // Reuse a dormant link below another subclass. Installing our same
             // procedure above that chain again would recurse into itself.
-            it->second.target = target; it->second.identity=target.get(); it->second.installed=true; return S_OK;
+            it->second.target = target; it->second.identity=target.get(); it->second.installed=true; it->second.pendingDetach=false; return S_OK;
         }
     }
     for (auto dead=hooks.begin(); dead!=hooks.end();) {
         if (dead->second.target.expired() && !IsWindow(dead->first)) dead=hooks.erase(dead); else ++dead;
     }
     if (hooks.size() >= 512 && !hooks.count(hwnd)) return E_OUTOFMEMORY;
-    hooks[hwnd] = {current, target, target.get(), true};
+    Hook fresh{}; fresh.original=current; fresh.target=target; fresh.identity=target.get(); fresh.installed=true;
+    hooks[hwnd]=std::move(fresh);
     SetLastError(0);
     auto previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(WindowProc));
     if (!previous && GetLastError()) { auto error=GetLastError(); hooks.erase(hwnd); return HRESULT_FROM_WIN32(error); }
@@ -158,7 +190,7 @@ std::shared_ptr<void> dt::CreateNativeViewportGuard() { return std::make_shared<
 void dt::SuspendNativeViewportGuard(std::shared_ptr<void> const& value) noexcept {
     if (value) Suspend(static_cast<Target*>(value.get()));
 }
-HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND owner, RECT client, bool discover) noexcept {
+HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND owner, RECT client, bool discover, int occludedTop) noexcept {
     if (!value || !owner || client.right-client.left<=32 || client.bottom-client.top<=32) return E_INVALIDARG;
     try {
         DWORD process=0; GetWindowThreadProcessId(owner,&process);
@@ -167,8 +199,8 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
         std::vector<HWND> windows;
         {
             std::lock_guard lock(gate);
-            bool changed=!target->enabled || target->owner!=owner || !Same(target->client,client);
-            target->owner=owner; target->client=client; target->enabled=true;
+            bool changed=!target->enabled || target->owner!=owner || !Same(target->client,client) || target->occludedTop!=occludedTop;
+            target->owner=owner; target->client=client; target->enabled=true; target->occludedTop=(std::max)(0,occludedTop);
             if (!changed && !discover) return S_OK;
             for (auto const& [hwnd,hook] : hooks) if (hook.identity==target.get() && IsWindow(hwnd) && IsChild(owner,hwnd)) windows.push_back(hwnd);
         }
@@ -209,6 +241,8 @@ HRESULT dt::UpdateNativeViewportGuard(std::shared_ptr<void> const& value, HWND o
             auto hr=Attach(hwnd,target);
             if (FAILED(hr)) { result=hr; continue; }
             Position(hwnd,owner,client);
+            if (GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId()) Clip(hwnd,target);
+            else PostMessageW(hwnd,SyncMessage(),0,0);
         }
         { std::lock_guard lock(gate); target->error=result; }
         return result;
@@ -222,7 +256,7 @@ std::wstring dt::NativeViewportGuardReport(std::shared_ptr<void> const& value) {
     for (auto const& [hwnd,hook]:hooks) if (hook.identity==target.get() && IsWindow(hwnd)) ++count;
     std::wostringstream out;
     out << L"Native viewport guard: enabled=" << target->enabled << L" windows=" << count << L" preventedResizes=" << target->corrections
-        << L" target=" << target->client.left << L',' << target->client.top << L',' << target->client.right-target->client.left << L',' << target->client.bottom-target->client.top
+        << L" overlayOcclusion=" << target->occludedTop << L" target=" << target->client.left << L',' << target->client.top << L',' << target->client.right-target->client.left << L',' << target->client.bottom-target->client.top
         << L" hr=0x" << std::hex << static_cast<unsigned long>(target->error) << L'\n';
     return out.str();
 }

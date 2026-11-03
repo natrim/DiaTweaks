@@ -118,15 +118,15 @@ int main() {
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0, "restore after arrange failure");
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts | dt::RevealToolbar | dt::Chat, 0) == 0, "enable hover with hidden toolbar and Chat preference");
         Check(fake->Compacted(11) && fake->Compacted(12), "compact reserved rows for both hidden bar hosts without changing app-hidden bookmarks visibility");
-        fake->FailLayoutRestore(11, true);
+        toolbar->failOverlay = true;
         fake->Hover(11, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
-        Check(fake->nodes.at(11).value == L"Collapsed" && fake->Compacted(11), "failed layout restoration blocks reveal and retains retry state");
-        fake->FailLayoutRestore(11, false);
+        Check(fake->nodes.at(11).value == L"Collapsed" && fake->Compacted(11), "failed overlay placement blocks reveal and retains retry state");
+        toolbar->failOverlay = false;
         fake->Hover(12, {true, true, true, false});
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(fake->nodes.at(11).value == L"Visible" && fake->nodes.at(1).value == L"Collapsed", "hover reveals toolbar while preserving child preferences");
-        Check(!fake->Compacted(11), "original row restored on reveal");
+        Check(fake->Compacted(11) && toolbar->overlay, "floating reveal keeps the reserved row empty");
         Check(fake->nodes.at(12).value == L"Collapsed", "hover does not reveal an originally hidden bookmarks bar");
         Check(SendMessageW(hwnd, dt::Query, dt::Toolbar, 0) == 0x10001, "configuration verification accepts intentional hover reveal");
         fake->ReAdd(11); Pump();
@@ -149,6 +149,7 @@ int main() {
         SendMessageW(hwnd, WM_TIMER, HoverTimer, 0);
         Check(SendMessageW(hwnd, dt::Configure, dt::ToolbarParts, 0) == 0 && fake->nodes.at(11).value == L"Collapsed", "disabling hover while revealed rehides toolbar");
         Check(fake->Compacted(11), "hide-only keeps the layout compact when hover is disabled");
+        Check(!toolbar->overlay, "disabling hover restores normal toolbar placement");
         Check(SendMessageW(hwnd, dt::Configure, dt::RevealToolbar, 0) == 0 && fake->nodes.at(11).value == L"Visible", "hover choice can remain dormant when Hide toolbar is off");
         Check(SendMessageW(hwnd, dt::Configure, 0, 0) == 0 && fake->nodes.at(1).value == L"Visible", "restore clears hover and child effects");
         fake->Hover(11, {true}); fake->Hover(12, {true});

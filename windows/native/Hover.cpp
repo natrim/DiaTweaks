@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <functional>
 
 namespace {
 using namespace winrt;
@@ -77,11 +78,67 @@ struct ElementLease {
     }
     ~ElementLease() { Restore(); }
 };
+struct OverlayProperty {
+    DependencyObject object{nullptr}; DependencyProperty property{nullptr};
+    Object original{nullptr}, applied{nullptr};
+    std::function<bool(Object const&,Object const&)> equal;
+    bool Ours() const { return equal(object.ReadLocalValue(property),applied); }
+    HRESULT Restore() noexcept {
+        try {
+            if (!Ours()) return S_OK;
+            if (original==DependencyProperty::UnsetValue()) object.ClearValue(property); else object.SetValue(property,original);
+            auto local=object.ReadLocalValue(property);
+            return (original==DependencyProperty::UnsetValue() ? local==original : equal(local,original)) ? S_OK : E_FAIL;
+        } catch (...) { return to_hresult(); }
+    }
+};
+struct OverlayLayout {
+    weak_ref<FrameworkElement> wrapper;
+    weak_ref<RowDefinition> vacatedRow;
+    std::vector<OverlayProperty> properties;
+    bool active=false;
+    HRESULT Restore() noexcept {
+        HRESULT hr=S_OK;
+        for (auto it=properties.rbegin();it!=properties.rend();++it) { auto result=it->Restore(); if (FAILED(result)) hr=result; }
+        if (SUCCEEDED(hr)) { properties.clear(); active=false; }
+        return hr;
+    }
+    ~OverlayLayout() { Restore(); }
+};
+template<class T> bool OverlayEqual(Object const& a,Object const& b) {
+    auto left=a.try_as<Windows::Foundation::IReference<T>>(), right=b.try_as<Windows::Foundation::IReference<T>>();
+    return left && right && left.Value()==right.Value();
+}
+template<class T> bool OverlayPlain(FrameworkElement const& object,DependencyProperty const& property) {
+    auto local=object.ReadLocalValue(property);
+    return local==DependencyProperty::UnsetValue() || static_cast<bool>(local.try_as<Windows::Foundation::IReference<T>>());
+}
+template<class T> HRESULT OverlaySet(OverlayLayout& layout,FrameworkElement const& object,DependencyProperty const& property,T value) {
+    auto it=std::find_if(layout.properties.begin(),layout.properties.end(),[&](auto const& p) { return p.object==object && p.property==property; });
+    if (it!=layout.properties.end() && !it->Ours()) { layout.properties.erase(it); it=layout.properties.end(); }
+    auto desired=box_value(value);
+    if (OverlayEqual<T>(object.GetValue(property),desired)) return S_OK;
+    if (!OverlayPlain<T>(object,property)) return E_NOTIMPL;
+    Object previousApplied=it==layout.properties.end() ? Object{nullptr} : it->applied;
+    if (it==layout.properties.end()) {
+        layout.properties.push_back({object,property,object.ReadLocalValue(property),desired,OverlayEqual<T>});
+        it=layout.properties.end()-1;
+    } else it->applied=desired;
+    try { object.SetValue(property,desired); }
+    catch (...) {
+        auto error=to_hresult();
+        if (previousApplied && !it->Ours()) it->applied=previousApplied;
+        return error;
+    }
+    return OverlayEqual<T>(object.GetValue(property),desired) ? S_OK : E_FAIL;
+}
 struct Region {
     weak_ref<FrameworkElement> pane, toolbar, bookmarks, page, owner;
     std::vector<std::unique_ptr<RowLease>> rows;
     std::vector<std::unique_ptr<ElementLease>> containers;
     double height = 56;
+    bool overlayEnabled=false, overlayEditing=false;
+    std::shared_ptr<OverlayLayout> overlay=std::make_shared<OverlayLayout>();
     dt::ViewportTrace trace;
     std::shared_ptr<void> nativeGuard = dt::CreateNativeViewportGuard();
     FrameworkElement::LayoutUpdated_revoker nativeLayout;
@@ -112,7 +169,7 @@ void CaptureViewport(Region& region, wchar_t const* source, bool force = false) 
 void TraceViewportFrames(std::shared_ptr<Region> const& region) noexcept {
     try {
         auto toolbar = region->toolbar.get();
-        if (!toolbar || toolbar.Visibility() != Visibility::Collapsed) {
+        if (!toolbar || (!region->overlayEnabled && toolbar.Visibility() != Visibility::Collapsed)) {
             region->rendering.revoke(); region->tracing = false; return;
         }
         region->traceUntil = GetTickCount64() + 2000;
@@ -124,7 +181,7 @@ void TraceViewportFrames(std::shared_ptr<Region> const& region) noexcept {
                 if (!current) return;
                 try {
                     auto bar = current->toolbar.get();
-                    if (GetTickCount64() >= current->traceUntil || !bar || bar.Visibility() != Visibility::Collapsed) {
+                    if (GetTickCount64() >= current->traceUntil || !bar || (!current->overlayEnabled && bar.Visibility() != Visibility::Collapsed)) {
                         current->rendering.revoke(); current->tracing = false; return;
                     }
                     CaptureViewport(*current, L"render");
@@ -205,12 +262,12 @@ void dt::WatchToolbarPolicy(std::shared_ptr<void> const& value, ToolbarPolicyApi
 }
 namespace {
 void UpdateNativeViewport(Region& region, bool discover) noexcept {
-    if (region.updatingNative || region.retiredViewport) return;
+    if (region.updatingNative || region.retiredViewport || region.overlayEditing) return;
     region.updatingNative = true;
     struct Done { bool& value; ~Done() { value=false; } } done{region.updatingNative};
     try {
         auto pane=region.pane.get(), toolbar=region.toolbar.get();
-        if (!region.hiddenPolicy || !pane || !toolbar || !pane.XamlRoot() || toolbar.Visibility()!=Visibility::Collapsed) {
+        if (!region.hiddenPolicy || !pane || !toolbar || !pane.XamlRoot() || (!region.overlayEnabled && toolbar.Visibility()!=Visibility::Collapsed)) {
             dt::SuspendNativeViewportGuard(region.nativeGuard); return;
         }
         auto page=Named(pane,L"VariantHost");
@@ -233,7 +290,10 @@ void UpdateNativeViewport(Region& region, bool discover) noexcept {
         if (hwnd && client.right-client.left>32 && client.bottom-client.top>32) {
             region.nativeWindow=hwnd; region.nativeClient=client;
         }
-        auto hr=dt::UpdateNativeViewportGuard(region.nativeGuard,hwnd,client,discover);
+        int occludedTop=0;
+        if (region.overlayEnabled && region.overlay->active)
+            if (auto chrome=region.overlay->wrapper.get()) occludedTop=static_cast<int>(std::ceil(chrome.ActualHeight()*scale));
+        auto hr=dt::UpdateNativeViewportGuard(region.nativeGuard,hwnd,client,discover,occludedTop);
         if (FAILED(hr)) region.traceError=hr;
     } catch (...) { region.traceError=to_hresult(); }
 }
@@ -244,12 +304,12 @@ void WatchNativeViewport(std::shared_ptr<Region> const& region) {
     std::weak_ptr<Region> weak=region;
     region->nativeLayout=pane.LayoutUpdated(auto_revoke,[weak](Object const&,Object const&) noexcept {
         auto current=weak.lock();
-        if (!current || current->repairingLayout) return;
+        if (!current || current->repairingLayout || current->overlayEditing) return;
         current->repairingLayout=true;
         struct Done { bool& value; ~Done() { value=false; } } done{current->repairingLayout};
         try {
             auto host=current->owner.get(), frame=current->pane.get();
-            if (current->hiddenPolicy && host && frame && Inside(host,frame) && host.Visibility()==Visibility::Collapsed) {
+            if (current->hiddenPolicy && host && frame && Inside(host,frame) && (current->overlayEnabled || host.Visibility()==Visibility::Collapsed)) {
                 auto before=current->layoutWrites;
                 auto hr=dt::CompactToolbarRow(current,true);
                 if (FAILED(hr)) current->traceError=hr;
@@ -359,6 +419,65 @@ HRESULT CompactRow(Region& region, RowDefinition const& row) {
     return S_OK;
 }
 }
+HRESULT dt::SetToolbarOverlay(std::shared_ptr<void> const& value,bool enabled) noexcept {
+    if (!value) return enabled ? E_FAIL : S_OK;
+    auto region=static_cast<Region*>(value.get());
+    if (enabled && region->retiredViewport) return S_OK;
+    region->overlayEditing=true;
+    struct Done { bool& value; ~Done() { value=false; } } done{region->overlayEditing};
+    try {
+        if (!enabled) {
+            region->overlayEnabled=false;
+            return region->overlay->Restore();
+        }
+        // Bookmarks participate in the same chrome wrapper as navigation.
+        // Only the navigation region owns the shared grid placement changes.
+        auto host=region->owner.get(), toolbar=region->toolbar.get(), pane=region->pane.get();
+        if (host!=toolbar) { region->overlayEnabled=true; return S_OK; }
+        if (!host || !pane) return E_NOTIMPL;
+        auto page=Named(pane,L"VariantHost");
+        auto branch=[&](FrameworkElement item) {
+            for (unsigned depth=0;item && depth<12;++depth) {
+                auto parent=VisualTreeHelper::GetParent(item);
+                if (parent==pane) return item;
+                item=parent.try_as<FrameworkElement>();
+            }
+            return FrameworkElement{nullptr};
+        };
+        auto chrome=branch(host), content=branch(page);
+        auto grid=pane.try_as<Grid>();
+        if (!grid || !chrome || !content || chrome==content ||
+            Grid::GetColumn(chrome)!=Grid::GetColumn(content) || Grid::GetColumnSpan(chrome)!=Grid::GetColumnSpan(content)) return E_NOTIMPL;
+        auto& layout=*region->overlay;
+        if (layout.active && layout.wrapper.get()!=chrome) {
+            auto hr=layout.Restore(); if (FAILED(hr)) return hr;
+        }
+        if (!OverlayPlain<int32_t>(chrome,Grid::RowProperty()) || !OverlayPlain<int32_t>(chrome,Grid::RowSpanProperty()) ||
+            !OverlayPlain<VerticalAlignment>(chrome,FrameworkElement::VerticalAlignmentProperty()) || !OverlayPlain<int32_t>(chrome,Canvas::ZIndexProperty())) return E_NOTIMPL;
+        if (!layout.active) {
+            int row=Grid::GetRow(chrome);
+            if (row==Grid::GetRow(content)) return E_NOTIMPL;
+            layout.wrapper=chrome;
+            if (row>=0 && static_cast<unsigned>(row)<grid.RowDefinitions().Size()) layout.vacatedRow=grid.RowDefinitions().GetAt(static_cast<unsigned>(row));
+        }
+        int pageZ=Canvas::GetZIndex(content), chromeZ=Canvas::GetZIndex(chrome);
+        if (pageZ==(std::numeric_limits<int>::max)()) return E_NOTIMPL;
+        auto apply=[&](auto property,auto desired) { return OverlaySet(layout,chrome,property,desired); };
+        // Keep the web content's row and size unchanged. Moving the chrome
+        // into that same cell makes it a top-aligned overlay, above the page.
+        HRESULT hr=apply(Grid::RowProperty(),Grid::GetRow(content));
+        if (SUCCEEDED(hr)) hr=apply(Grid::RowSpanProperty(),Grid::GetRowSpan(content));
+        if (SUCCEEDED(hr)) hr=apply(FrameworkElement::VerticalAlignmentProperty(),VerticalAlignment::Top);
+        if (SUCCEEDED(hr)) hr=apply(Canvas::ZIndexProperty(),(std::max)(chromeZ,pageZ+1));
+        if (FAILED(hr)) { layout.Restore(); return hr; }
+        layout.active=true; region->overlayEnabled=true;
+        return S_OK;
+    } catch (...) {
+        auto error=to_hresult();
+        region->overlay->Restore(); region->overlayEnabled=false;
+        return error;
+    }
+}
 void dt::ReattachToolbarViewport(std::shared_ptr<void> const& value) noexcept {
     if (value) static_cast<Region*>(value.get())->retiredViewport=false;
 }
@@ -387,6 +506,7 @@ bool dt::InheritToolbarViewport(std::shared_ptr<void> const& value, std::shared_
                 std::abs(rect.Width*scale-(previous->nativeClient.right-previous->nativeClient.left))<=32;
         }
         if (!same) return false;
+        if (previous->overlay->active && region->pane.get()==previous->pane.get()) region->overlay=previous->overlay;
         if (region->nativeGuard==previous->nativeGuard) return true;
         dt::SuspendNativeViewportGuard(region->nativeGuard);
         region->nativeGuard=previous->nativeGuard;
@@ -408,6 +528,7 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
     auto region=static_cast<Region*>(value.get());
     try {
         if (compact && region->retiredViewport) return S_OK;
+        if (region->overlayEnabled) compact=true;
         region->hiddenPolicy=compact;
         if (!compact) {
             DetachToolbarViewport(value);
@@ -416,7 +537,7 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
             return FAILED(row)?row:wrapper;
         }
         auto host=region->owner.get(), pane=region->pane.get();
-        if (!host || host.Visibility()!=Visibility::Collapsed) return S_OK;
+        if (!host || (!region->overlayEnabled && host.Visibility()!=Visibility::Collapsed)) return S_OK;
         std::vector<RowDefinition> visitedRows;
         std::vector<FrameworkElement> visitedContainers;
         FrameworkElement branch=host;
@@ -452,6 +573,10 @@ HRESULT dt::CompactToolbarRow(std::shared_ptr<void> const& value, bool compact) 
             }
             branch=element;
         }
+        if (region->overlayEnabled) if (auto row=region->overlay->vacatedRow.get()) {
+            visitedRows.push_back(row);
+            auto hr=CompactRow(*region,row); if (FAILED(hr)) return hr;
+        }
         auto rows=RestoreExcept(region->rows,[&](auto const& lease){return std::find(visitedRows.begin(),visitedRows.end(),lease.row.get())!=visitedRows.end();});
         auto containers=RestoreExcept(region->containers,[&](auto const& lease){return std::find(visitedContainers.begin(),visitedContainers.end(),lease.element.get())!=visitedContainers.end();});
         return FAILED(rows)?rows:containers;
@@ -475,7 +600,7 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
         // Complete only the layout already requested by Dia and our policies.
         pane.UpdateLayout();
         UpdateNativeViewport(*region,true);
-        if (auto toolbar=region->toolbar.get(); toolbar && toolbar.Visibility()==Visibility::Collapsed)
+        if (auto toolbar=region->toolbar.get(); toolbar && (region->overlayEnabled || toolbar.Visibility()==Visibility::Collapsed))
             WatchNativeViewport(std::static_pointer_cast<Region>(value));
         CaptureViewport(*region, L"after-layout", true);
         TraceViewportFrames(std::static_pointer_cast<Region>(value));
@@ -486,7 +611,8 @@ HRESULT dt::FlushToolbarLayout(std::shared_ptr<void> const& value) noexcept {
 std::wstring dt::ToolbarLayoutTrace(std::shared_ptr<void> const& value) {
     if (!value) return L"VIEWPORT TIMING unavailable\n";
     auto region = static_cast<Region*>(value.get());
-    auto report = dt::NativeViewportGuardReport(region->nativeGuard) + L"Viewport handoffs="+
+    auto report = L"Floating toolbar: enabled="+std::to_wstring(region->overlayEnabled)+L" ownedProperties="+
+        std::to_wstring(region->overlay->properties.size())+L"\n"+dt::NativeViewportGuardReport(region->nativeGuard) + L"Viewport handoffs="+
         std::to_wstring(region->viewportHandoffs)+L"\n"+region->trace.Report();
     if (FAILED(region->traceError)) {
         wchar_t error[80]{};

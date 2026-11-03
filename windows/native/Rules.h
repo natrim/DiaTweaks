@@ -42,7 +42,7 @@ inline constexpr Tweak Tweaks[] = {
     {ToolbarParts, Toolbar, L"HideToolbar", L"--hide-toolbar", L"Hide toolbar",
      L"Hide the address and navigation toolbar and bookmarks bar. Experimental."},
     {RevealToolbar, RevealToolbar, L"RevealToolbar", L"--reveal-toolbar", L"Reveal toolbar on hover",
-     L"Show the hidden toolbar at the top of the page. Requires Hide toolbar. Experimental."},
+     L"Float the hidden toolbar over the page without moving web content. Requires Hide toolbar. Experimental."},
     {Chat, Chat, L"HideChat", L"--hide-chat", L"Hide Chat button", L"Remove the Chat button from the toolbar."},
     {Sidebar, Sidebar, L"HideSidebar", L"--hide-sidebar", L"Hide sidebar button", L"Remove the button that opens and closes the sidebar."},
     {Downloads, Downloads, L"HideDownloads", L"--hide-downloads", L"Hide downloads button", L"Remove the downloads button from the toolbar."},

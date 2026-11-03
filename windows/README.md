@@ -46,8 +46,8 @@ matching sidebar header exists. Spaces uses the observed exact button ID.
 Hover reveal uses at least the top 24 logical pixels of the content pane. It also
 covers the blank strip before VariantHost plus 16 logical pixels of the page,
 with a 128-pixel cap. Dedicated fixed toolbar grid rows are made Auto while hidden
-(and their explicit minimum height removed), then restored before reveal or when
-disabling the option. Shared rows, star-sized rows and bound sizes are left alone.
+(and their explicit minimum height removed), and stay compact during floating reveal. Original placement and row sizes are
+restored when disabling the option. Shared rows, star-sized rows and bound sizes are left alone.
 The trigger therefore stays usable even where the surrounding native layout
 still reserves space. Hover keeps the
 bar open while the pointer or keyboard focus is in it, and hides after a 250 ms
@@ -401,7 +401,7 @@ that callback does not access WinUI or wait on the XAML thread. Layout changes
 refresh the target, including window resize and DPI changes. A temporary old
 toolbar offset is excluded while real info/bookmark bars retain their space.
 
-Reveal/disable/unload suspends the constraint before restoring the toolbar and
+Disable/unload suspends the constraint before restoring the toolbar and
 restores the original window procedure when it is still ours. Other subclass
 chains remain intact. Other panes, classes and processes are excluded. Timing
 diagnostics include the guarded-window count and prevented resize count.
@@ -437,7 +437,26 @@ Restore and observer replacement suppress these callbacks during their own write
 
 A replacement navigation host also inherits the previous pane's native viewport
 target. Retiring a toolbar stops its callbacks while retaining that target until
-its replacement takes over. Reveal/disable/unload explicitly release it. Pane
+its replacement takes over. Disable/unload explicitly release it. Floating reveal retains it. Pane
 identity or same-window matching page geometry is required for inheritance; other
 panes are excluded. Diagnostics include early page-property repair and viewport
 handoff counts.
+
+### Floating hover toolbar
+
+With Hide toolbar and Reveal toolbar on hover enabled, the navigation chrome
+shares the page grid cell, aligned at the top and drawn above the content.
+Showing or hiding it leaves the page row and native viewport dimensions unchanged.
+The bookmarks bar follows the same overlay and retains its original visibility.
+This applies with Edge-to-edge either enabled or disabled.
+
+While the toolbar is visible, an owned native window region excludes just its
+covered top band, allowing XAML controls to draw and receive pointer input above
+the Chromium HWND. The window itself keeps its full client size. The original
+region is restored on hide, disable or unload, unless Dia has replaced it.
+Diagnostics report `Floating toolbar` and `overlayOcclusion` in physical pixels.
+
+Windows tests cover reveal/hide orchestration, failure recovery, native client
+size stability, clipping, original-region restoration, app-owned region changes
+and detach. Actual Dia rendering and pointer interaction still require manual
+verification.

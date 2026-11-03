@@ -33,6 +33,12 @@ HWND Child(HWND owner,wchar_t const* type,int x,int y,int w,int h) {
     auto hwnd=CreateWindowExW(0,type,L"",WS_CHILD|WS_VISIBLE,x,y,w,h,owner,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(hwnd!=nullptr,"viewport window"); return hwnd;
 }
+bool Covered(HWND hwnd,int y) {
+    auto region=CreateRectRgn(0,0,0,0);
+    int type=GetWindowRgn(hwnd,region);
+    bool covered=type!=ERROR && !PtInRegion(region,10,y);
+    DeleteObject(region); return covered;
+}
 void AttemptSize(HWND hwnd,RECT bad) {
     DWORD_PTR result=0;
     Check(SendMessageTimeoutW(hwnd,Attempt,0,reinterpret_cast<LPARAM>(&bad),SMTO_ABORTIFHUNG,2000,&result)!=0 && result!=0,"native resize request completes");
@@ -81,6 +87,34 @@ int main() {
         AttemptSize(renderer,{0,0,client.right-4,client.bottom-40});
         Check(Rect(renderer,view).bottom==816,"replacement renderer cannot independently shrink inside its full-size host");
         Check(dt::NativeViewportGuardReport(guard).find(L"preventedResizes=0")==std::wstring::npos,"intercepted resize attempts are reported");
+        RECT beforeOverlay{}; GetClientRect(view,&beforeOverlay);
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,40)),"show floating toolbar");
+        RECT duringOverlay{}; GetClientRect(view,&duringOverlay);
+        Check(Same(beforeOverlay,duringOverlay) && Same(Rect(view,owner),larger),"floating reveal never resizes native client or moves its origin");
+        Check(Covered(view,10) && !Covered(view,60),"only the toolbar band is excluded from native painting and input");
+        AttemptSize(view,bad);
+        Check(Same(Rect(view,owner),larger) && Covered(view,10),"native relayout preserves floating clip and full viewport");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,0)),"hide floating toolbar");
+        auto read=CreateRectRgn(0,0,0,0);
+        Check(GetWindowRgn(view,read)==ERROR,"hide restores originally unrestricted window region");
+        auto originalRegion=CreateRectRgn(0,0,840,800);
+        auto supplied=CreateRectRgn(0,0,840,800);
+        Check(SetWindowRgn(view,supplied,TRUE)!=0,"install app region");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,40)),"clip an existing app region");
+        Check(Covered(view,10) && !Covered(view,60),"floating clip intersects existing app region");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,0)),"restore existing app region");
+        Check(GetWindowRgn(view,read)!=ERROR && EqualRgn(read,originalRegion),"original region restored exactly");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,40)),"reveal before detach");
+        dt::SuspendNativeViewportGuard(guard);
+        Check(GetWindowRgn(view,read)!=ERROR && EqualRgn(read,originalRegion),"unload restores clipping before removing native hook");
+        // Dia changing the region ends our ownership; hiding must preserve it.
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,40)),"reveal before app takeover");
+        auto replacementRegion=CreateRectRgn(0,0,830,790);
+        auto replacementCopy=CreateRectRgn(0,0,830,790);
+        Check(SetWindowRgn(view,replacementRegion,TRUE)!=0,"app takes region ownership");
+        Check(SUCCEEDED(dt::UpdateNativeViewportGuard(guard,owner,larger,false,0)),"hide after app takeover");
+        Check(GetWindowRgn(view,read)!=ERROR && EqualRgn(read,replacementCopy),"hide preserves app-owned replacement region");
+        DeleteObject(originalRegion); DeleteObject(replacementCopy); DeleteObject(read);
         dt::SuspendNativeViewportGuard(guard);
         Check(GetWindowLongPtrW(view,GWLP_WNDPROC)==original,"original window procedure restored");
         AttemptSize(view,bad);
@@ -111,15 +145,16 @@ int main() {
         });
         auto windows=ready.get_future().get();
         auto threaded=dt::CreateNativeViewportGuard();
-        bool armed=SUCCEEDED(dt::UpdateNativeViewportGuard(threaded,windows.first,full));
+        bool armed=SUCCEEDED(dt::UpdateNativeViewportGuard(threaded,windows.first,full,true,40));
         if (armed) AttemptSize(windows.second,bad);
-        bool correct=Same(Rect(windows.second,windows.first),full);
+        bool correct=Same(Rect(windows.second,windows.first),full) && Covered(windows.second,10);
         dt::SuspendNativeViewportGuard(threaded);
         AttemptSize(windows.second,bad);
-        bool released=Same(Rect(windows.second,windows.first),bad);
+        for (unsigned i=0;i<100 && Covered(windows.second,10);++i) Sleep(5);
+        bool released=Same(Rect(windows.second,windows.first),bad) && !Covered(windows.second,10);
         PostMessageW(windows.first,WM_CLOSE,0,0); native.join();
         Check(armed && correct && released,"cross-thread guard applies and detaches without UI-thread calls");
-        std::cout << "Native viewport resize interception, pane isolation, resize, restore and cross-thread checks passed\n";
+        std::cout << "Native viewport resize interception, pane isolation, resize, restore, floating overlay clip and cross-thread checks passed\n";
         return 0;
     } catch(std::exception const& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }
