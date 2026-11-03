@@ -491,6 +491,10 @@ HRESULT Apply(State& state, PageFrame& page) {
         state.detail = L"Could not apply or restore page RectangleClip corner radii.";
         result = clipResult;
     }
+    if (!state.propertyCallback && !(state.flags & dt::Toolbar)) {
+        PublishViewport(state,page,true); WatchViewport(state,page);
+        if (FAILED(page.error)) result=page.error;
+    }
     return result;
 }
 
